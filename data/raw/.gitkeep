@@ -1,0 +1,3 @@
+# Raw audit logs live here (JSON, JSONL, CSV or CloudTrail dumps).
+# Files in this directory are git-ignored; run `python -m cloudsentinel demo`
+# to generate sample telemetry.

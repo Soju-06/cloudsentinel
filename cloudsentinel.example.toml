@@ -1,0 +1,48 @@
+# CloudSentinel configuration example.
+# Copy to cloudsentinel.toml (auto-discovered) or pass with `-c path/to/file`.
+
+[brute_force]
+enabled = true
+threshold = 5                 # failed logins required to alert
+window_minutes = 10           # sliding window
+critical_multiplier = 3       # 3x threshold -> CRITICAL
+compromise_window_minutes = 30
+detect_compromise = true      # success after burst -> CRITICAL
+correlate_across_ips = true   # catch bursts spread over multiple IPs
+group_by = "user_ip"          # user_ip | user | ip
+login_events = ["ConsoleLogin", "Login", "SignIn", "UserLogin", "Authenticate"]
+
+[public_storage]
+enabled = true
+
+[iam]
+enabled = true
+scan_inline_policies = true
+
+[impossible_travel]
+enabled = true
+min_distance_km = 500         # ignore short hops
+max_travel_hours = 3          # flag moves faster than this
+critical_distance_km = 5000
+critical_travel_hours = 1
+
+[impossible_travel.geoip]
+backend = "event"             # event | maxmind | http
+# maxmind_db_path = "C:/GeoLite2-City.mmdb"
+# http_timeout_seconds = 2.0
+
+[notifications]
+enabled = false
+min_severity = "high"
+# slack_webhook_url = "https://hooks.slack.com/services/T000/B000/xxxx"
+# webhook_url = "https://your-siem.example/ingest/cloudsentinel"
+# smtp_host = "smtp.example.com"
+# smtp_port = 587
+# smtp_username = "alerts@example.com"
+# smtp_password = "use CLOUDSENTINEL_SMTP_PASSWORD instead"
+# email_from = "alerts@example.com"
+# email_to = ["security@example.com"]
+max_alerts = 20
+
+# Findings for the same detector/entity inside this window are merged.
+suppression_minutes = 60

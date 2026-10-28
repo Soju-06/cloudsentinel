@@ -1,0 +1,59 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# --- Runtime data ---
+data/sentinel.db
+data/sentinel.db-shm
+data/sentinel.db-wal
+data/raw/*.json
+data/raw/*.jsonl
+data/raw/*.csv
+!data/raw/.gitkeep
+reports/*
+!reports/.gitkeep
+
+# Local configuration may contain secrets
+cloudsentinel.toml
+config.json
+.env
+
+# --- Flutter / Dart ---
+mobile/cloudsentinel_mobile/.dart_tool/
+mobile/cloudsentinel_mobile/build/
+mobile/cloudsentinel_mobile/.flutter-plugins
+mobile/cloudsentinel_mobile/.flutter-plugins-dependencies
+mobile/cloudsentinel_mobile/.packages
+mobile/cloudsentinel_mobile/*.iml
+mobile/cloudsentinel_mobile/android/.gradle/
+mobile/cloudsentinel_mobile/android/.kotlin/
+mobile/cloudsentinel_mobile/android/local.properties
+mobile/cloudsentinel_mobile/android/app/debug/
+mobile/cloudsentinel_mobile/android/app/profile/
+mobile/cloudsentinel_mobile/android/app/release/
+mobile/cloudsentinel_mobile/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+
+# --- Build caches ---
+.cache/
+.build-cache/
+
+# --- IDE / OS ---
+*.iml
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
