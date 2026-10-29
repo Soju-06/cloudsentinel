@@ -7,6 +7,7 @@ import '../api.dart';
 import '../connection.dart';
 import '../serve_command.dart';
 import '../theme.dart';
+import '../widgets/golf_attempt.dart';
 import 'alert_detail_screen.dart';
 import 'settings_screen.dart';
 
@@ -794,7 +795,7 @@ class _EmptyState extends StatelessWidget {
 /// Shown when the first API call fails. It explains that the client is only a
 /// viewer, shows the exact command that starts the server, and offers a way to
 /// switch to another address without wiping and retyping everything.
-class ConnectionLostView extends StatelessWidget {
+class ConnectionLostView extends StatefulWidget {
   const ConnectionLostView({
     super.key,
     required this.message,
@@ -808,16 +809,29 @@ class ConnectionLostView extends StatelessWidget {
   final Future<void> Function({bool silent}) onRetry;
   final Future<void> Function() onChangeServer;
 
+  @override
+  State<ConnectionLostView> createState() => _ConnectionLostViewState();
+}
+
+class _ConnectionLostViewState extends State<ConnectionLostView> {
+  int _attempt = 0;
+
   bool get _isPhone =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
-  String get _command => serveCommandFor(serverUrl, lan: _isPhone);
+  String get _command => serveCommandFor(widget.serverUrl, lan: _isPhone);
 
-  Future<void> _copyCommand(BuildContext context) async {
+  Future<void> _copyCommand() async {
     await Clipboard.setData(ClipboardData(text: _command));
-    if (!context.mounted) return;
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
         .showSnackBar(const SnackBar(content: Text('Start command copied')));
+  }
+
+  Future<void> _retry() async {
+    // Replay the swing so the attempt is visible, then ask the API again.
+    setState(() => _attempt++);
+    await widget.onRetry();
   }
 
   @override
@@ -830,12 +844,8 @@ class ConnectionLostView extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
-                Icons.cloud_off_outlined,
-                color: AppColors.critical,
-                size: 44,
-              ),
-              const SizedBox(height: 16),
+              GolfAttempt(attempt: _attempt),
+              const SizedBox(height: 4),
               const Text(
                 'CONNECTION LOST',
                 style: TextStyle(
@@ -847,7 +857,7 @@ class ConnectionLostView extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                message,
+                widget.message,
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: AppColors.muted,
@@ -856,12 +866,9 @@ class ConnectionLostView extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              _AddressPill(url: serverUrl),
+              _AddressPill(url: widget.serverUrl),
               const SizedBox(height: 18),
-              _StartServerHint(
-                command: _command,
-                onCopy: () => _copyCommand(context),
-              ),
+              _StartServerHint(command: _command, onCopy: _copyCommand),
               const SizedBox(height: 22),
               Wrap(
                 alignment: WrapAlignment.center,
@@ -873,7 +880,7 @@ class ConnectionLostView extends StatelessWidget {
                       minimumSize: const Size(0, 50),
                       padding: const EdgeInsets.symmetric(horizontal: 22),
                     ),
-                    onPressed: () => onRetry(),
+                    onPressed: _retry,
                     icon: const Icon(Icons.refresh, size: 18),
                     label: const Text('RETRY'),
                   ),
@@ -892,7 +899,7 @@ class ConnectionLostView extends StatelessWidget {
                         letterSpacing: 1.2,
                       ),
                     ),
-                    onPressed: () => onChangeServer(),
+                    onPressed: widget.onChangeServer,
                     icon: const Icon(Icons.dns_outlined, size: 18),
                     label: const Text('CHANGE SERVER'),
                   ),

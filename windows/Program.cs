@@ -36,6 +36,7 @@ namespace CloudSentinel
         private readonly bool _devTools;
         private readonly bool _probe;
         private readonly string _screenshotPath;
+        private int _screenshotDelayMs = 9000;
         private string _serverUrl;
         private string _token;
         private LocalServer _server;
@@ -58,6 +59,14 @@ namespace CloudSentinel
                 else if (args[index] == "--screenshot" && index + 1 < args.Length)
                 {
                     _screenshotPath = args[++index];
+                }
+                else if (args[index] == "--screenshot-delay" && index + 1 < args.Length)
+                {
+                    int delay;
+                    if (int.TryParse(args[++index], out delay) && delay >= 0)
+                    {
+                        _screenshotDelayMs = delay;
+                    }
                 }
             }
 
@@ -196,7 +205,7 @@ namespace CloudSentinel
         /// </summary>
         private async Task RunScreenshot()
         {
-            await Task.Delay(9000);
+            await Task.Delay(Math.Max(0, _screenshotDelayMs));
             string target = Path.GetFullPath(_screenshotPath);
             string directory = Path.GetDirectoryName(target);
             if (!string.IsNullOrEmpty(directory))

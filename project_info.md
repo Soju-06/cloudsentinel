@@ -133,11 +133,12 @@ notification transports, configuration, CLI round trips, REST API auth/filters/
 pagination/scan gating and end-to-end sample data. A genuine AWS CloudWatch
 Logs subscription fixture lives in `tests/fixtures/`.
 
-The Flutter client adds 23 Dart tests (`flutter test`): URL normalisation,
+The Flutter client adds 25 Dart tests (`flutter test`): URL normalisation,
 tolerant model parsing, token headers, 401/403 error paths, filter query
 encoding, network failure handling, timestamp formatting, connect-screen
-widget behaviour, and the connection-recovery flow (serve-command builder,
-copy-to-clipboard, change-server prefill and preference clearing).
+widget behaviour, the connection-recovery flow (serve-command builder,
+copy-to-clipboard, change-server prefill and preference clearing) and the golf
+animation (one-shot play, replay on retry, reduced-motion fallback).
 `flutter analyze` reports no issues.
 
 ## Hardening & scale (Phase 12)
@@ -186,6 +187,19 @@ copy-to-clipboard, change-server prefill and preference clearing).
 - `INSTALL.md` documents server setup, Windows launch, Android sideload and
   troubleshooting.
 
+## Connection recovery & motion (Phase 15)
+- `lib/serve_command.dart` derives the exact `serve` invocation from the URL the
+  client tried, adding `--host 0.0.0.0` on Android and reusing the saved port.
+- `ConnectionLostView` states that the client is only a viewer, shows the
+  command with a copy button, and offers RETRY plus CHANGE SERVER. Changing the
+  server clears the stored URL/token but pre-fills the connect form with them.
+- `lib/widgets/golf_attempt.dart` draws a one-shot golf scene with a custom
+  painter: backswing, arcing flight, two bounces, a roll that stops beside the
+  hole, flag flutter and a fading "SO CLOSE" caption. RETRY replays it; reduced
+  motion jumps to the final frame. No assets, no packages, no infinite ticker.
+- The Windows shell gained `--screenshot FILE` and `--screenshot-delay MS`, so
+  either state can be captured off-screen even when another window covers it.
+
 ## Design decisions
 - Generic-first schema keeps the detectors vendor-neutral.
 - CloudTrail adapter maps `eventName`, `errorCode`, `sourceIPAddress`,
@@ -226,12 +240,14 @@ copy-to-clipboard, change-server prefill and preference clearing).
    corrupt records, cross-IP bursts, 100k benchmark.
 7. ✅ REST API + native Flutter Android APK (Phase 13).
 8. ✅ Windows desktop app + release packaging (Phase 14).
-9. ⬜ Alert triage state, streaming ingestion, real auth + TLS.
-10. ⬜ Additional detections (MFA/root/key/security-group/CloudTrail tampering).
+9. ✅ Connection-recovery UX with start-command hint and golf animation
+   (Phase 15).
+10. ⬜ Alert triage state, streaming ingestion, real auth + TLS.
+11. ⬜ Additional detections (MFA/root/key/security-group/CloudTrail tampering).
 
 ## Project status
-Phases 0–14 complete and verified:
-- 156/156 Python tests passing; 23/23 Flutter tests passing; `flutter analyze`
+Phases 0–15 complete and verified:
+- 156/156 Python tests passing; 25/25 Flutter tests passing; `flutter analyze`
   reports no issues.
 - Demo dataset: 210 events → 10 alerts (5 critical, 5 high), all four engines.
 - Dashboard headless run: 0 exceptions, 3 tabs, 3 actions, 4 export formats.
@@ -239,11 +255,12 @@ Phases 0–14 complete and verified:
   `/api/summary` is rejected with 401, token requests return the summary.
 - Android release APK rebuilt from final source and copied to
   `dist/CloudSentinel-1.0.0.apk` (49.8 MB, debug signing; sideload).
-  SHA-256 `AFCDDB5894E5EE14E8D9BD13D2949F85F18EDAB51F96336EF59C09106751979E`.
+  SHA-256 `9AC7D8128AD48974DB289A01F408AD067562A1E12D2F82E8ABD4FCD2EE08F24D`.
 - Windows app built at `app/CloudSentinel.exe` (20.7 MB) and verified live
   against the API; viewport/DPI probe matches the window at 125 % scaling.
 - Connection-recovery screen verified by off-screen render in both states:
-  server offline (error screen with command) and server online (dashboard).
+  server offline (error screen with command, golf scene at rest) and server
+  online (dashboard).
 - Benchmark: ~5.6 s median for 100k events (~18k events/s end-to-end) on a
   quiet machine; slower when antivirus is active.
 - Docker CLI unavailable on the development machine, so image build untested.

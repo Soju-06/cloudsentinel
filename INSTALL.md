@@ -69,6 +69,8 @@ Environment variables work too: `CLOUDSENTINEL_API_TOKEN`,
    the address it tried, the exact `serve` command, and two buttons:
    **RETRY** and **CHANGE SERVER**. *Change server* forgets the saved address
    but pre-fills the form with it, so you only edit the port or token.
+   A one-shot golf animation (ball lands just short of the hole) plays on that
+   screen and swings again each time you press RETRY.
 
 No installer and **no administrator rights** are needed. The folder is portable
 — copy it anywhere, including a USB stick.
@@ -107,6 +109,7 @@ Other flags:
 | `--devtools` | enables F12 DevTools and the right-click menu |
 | `--probe` | writes viewport/DPI diagnostics to `%TEMP%\cloudsentinel-probe.txt` and exits |
 | `--screenshot FILE` | renders the page to a PNG off-screen, then exits (build QA) |
+| `--screenshot-delay MS` | wait before the capture, e.g. `4000` to catch an animation mid-flight |
 | `F5` | reload the UI |
 
 ### Keyboard & window behaviour
@@ -210,7 +213,7 @@ Get-Content "$env:TEMP\cloudsentinel-probe.txt"
 ```powershell
 cd mobile\cloudsentinel_mobile
 flutter pub get
-flutter test                 # 23 tests
+flutter test                 # 25 tests
 flutter build apk --release
 # output: build\app\outputs\flutter-apk\app-release.apk
 ```

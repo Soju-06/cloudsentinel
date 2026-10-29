@@ -3,6 +3,7 @@ import 'package:cloudsentinel_mobile/screens/connect_screen.dart';
 import 'package:cloudsentinel_mobile/screens/dashboard_screen.dart';
 import 'package:cloudsentinel_mobile/serve_command.dart';
 import 'package:cloudsentinel_mobile/theme.dart';
+import 'package:cloudsentinel_mobile/widgets/golf_attempt.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -86,6 +87,49 @@ void main() {
     await tester.tap(find.text('RETRY'));
     await tester.pump();
     expect(retries, 1);
+    expect(tester.binding.hasScheduledFrame, isTrue);
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('golf animation plays once, then replays on demand', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+
+    await tester.pumpWidget(_wrap(const GolfAttempt()));
+    expect(
+      find.bySemanticsLabel(
+        'A golf ball rolls to a stop just short of the hole',
+      ),
+      findsOneWidget,
+    );
+
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.binding.hasScheduledFrame, isTrue);
+
+    await tester.pumpAndSettle();
+    expect(tester.binding.hasScheduledFrame, isFalse);
+
+    await tester.pumpWidget(_wrap(const GolfAttempt(attempt: 1)));
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(tester.binding.hasScheduledFrame, isTrue);
+    await tester.pumpAndSettle();
+
+    semantics.dispose();
+  });
+
+  testWidgets('golf animation honours reduced motion', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        MediaQuery(
+          data: const MediaQueryData(disableAnimations: true),
+          child: const GolfAttempt(),
+        ),
+      ),
+    );
+
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(tester.binding.hasScheduledFrame, isFalse);
   });
 
   testWidgets('copy button puts the start command on the clipboard', (

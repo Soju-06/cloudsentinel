@@ -51,7 +51,7 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 - **Futuristic console** — dark glassmorphism theme, neon severity badges,
   Plotly charts, top-risk entities and one-click exports.
 - **Docker** — `Dockerfile` + `docker-compose.yml` for a reproducible console.
-- **156 automated Python tests** plus **23 Flutter tests** covering ingestion,
+- **156 automated Python tests** plus **25 Flutter tests** covering ingestion,
   every detector, storage, reporting, notifications, configuration, CLI, API
   auth/filters, hardening scenarios, the Dart API client and app boot flow.
 
@@ -309,6 +309,8 @@ requirement — the folder can be copied anywhere.
 If the remembered server is no longer running, the app shows **CONNECTION LOST**
 with the exact `serve` command and a copy button, plus **RETRY** and
 **CHANGE SERVER** (which pre-fills the address so you only fix what changed).
+A small golf animation plays on that screen — the ball lands just short of the
+hole — and swings again every time you press RETRY.
 
 A shortcut can skip the connect screen:
 
@@ -457,7 +459,7 @@ cloudsentinel/
 ├── mobile/cloudsentinel_mobile/ # native Flutter client (Android + web)
 │   ├── lib/api.dart             # typed API client + models
 │   ├── lib/screens/             # connect, dashboard, detail, settings
-│   ├── test/                    # 23 Dart unit/widget tests
+│   ├── test/                    # 25 Dart unit/widget tests
 │   ├── web/                     # boot splash, manifest, icons
 │   └── android/                 # manifest, icons, launch screen
 ├── windows/                     # WebView2 desktop shell + build script
@@ -513,10 +515,11 @@ flutter analyze
 flutter test
 ```
 
-23 tests covering URL normalisation, tolerant JSON parsing, token headers,
+25 tests covering URL normalisation, tolerant JSON parsing, token headers,
 401/403 handling, filter query encoding, network failures, timestamp
-formatting, the connect-screen boot/validation flow and the connection-recovery
-screen (serve command, clipboard copy, change-server prefill).
+formatting, the connect-screen boot/validation flow, the connection-recovery
+screen (serve command, clipboard copy, change-server prefill) and the golf
+animation (plays once, replays on retry, respects reduced motion).
 
 ---
 
