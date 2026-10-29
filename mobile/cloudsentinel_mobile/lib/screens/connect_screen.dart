@@ -6,19 +6,32 @@ import '../connection.dart';
 import '../theme.dart';
 
 class ConnectScreen extends StatefulWidget {
-  const ConnectScreen({super.key, required this.onConnected});
+  const ConnectScreen({
+    super.key,
+    required this.onConnected,
+    this.initialUrl,
+    this.initialToken,
+  });
 
   final Future<void> Function(Connection connection) onConnected;
+
+  /// Pre-fills the form when the user chose "Change server" after a failure.
+  final String? initialUrl;
+  final String? initialToken;
 
   @override
   State<ConnectScreen> createState() => _ConnectScreenState();
 }
 
 class _ConnectScreenState extends State<ConnectScreen> {
-  final _urlController = TextEditingController(
-    text: kIsWeb ? 'http://127.0.0.1:8080' : 'http://192.168.1.10:8080',
+  late final TextEditingController _urlController = TextEditingController(
+    text:
+        widget.initialUrl ??
+        (kIsWeb ? 'http://127.0.0.1:8080' : 'http://192.168.1.10:8080'),
   );
-  final _tokenController = TextEditingController();
+  late final TextEditingController _tokenController = TextEditingController(
+    text: widget.initialToken ?? '',
+  );
 
   bool _busy = false;
   bool _obscureToken = true;
@@ -139,7 +152,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
                                 size: 20,
                               ),
                               suffixIcon: IconButton(
-                                tooltip: _obscureToken ? 'Show token' : 'Hide token',
+                                tooltip: _obscureToken
+                                    ? 'Show token'
+                                    : 'Hide token',
                                 icon: Icon(
                                   _obscureToken
                                       ? Icons.visibility_outlined
@@ -308,7 +323,11 @@ class _ServerHint extends StatelessWidget {
           const Text(
             'Android: add --host 0.0.0.0 and use the computer\'s LAN address. '
             'Windows: http://127.0.0.1:8080 works locally.',
-            style: TextStyle(color: AppColors.muted, fontSize: 10.5, height: 1.5),
+            style: TextStyle(
+              color: AppColors.muted,
+              fontSize: 10.5,
+              height: 1.5,
+            ),
           ),
         ],
       ),

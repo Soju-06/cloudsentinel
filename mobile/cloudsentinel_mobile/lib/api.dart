@@ -113,7 +113,9 @@ class AlertsPage {
       alerts: raw is List
           ? raw
                 .whereType<Map>()
-                .map((item) => AlertItem.fromJson(Map<String, dynamic>.from(item)))
+                .map(
+                  (item) => AlertItem.fromJson(Map<String, dynamic>.from(item)),
+                )
                 .toList(growable: false)
           : const [],
     );
@@ -168,8 +170,8 @@ class ApiClient {
           .timeout(const Duration(seconds: 10));
     } on TimeoutException {
       throw ApiException('Connection timed out. Is the server running?');
-    } on http.ClientException catch (error) {
-      throw ApiException('Cannot reach $baseUrl (${error.message})');
+    } on http.ClientException {
+      throw ApiException('Cannot reach $baseUrl');
     }
 
     if (response.statusCode == 401) {

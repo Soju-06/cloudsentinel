@@ -1,7 +1,11 @@
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 
 import '../api.dart';
 import '../connection.dart';
+import '../serve_command.dart';
 import '../theme.dart';
 import 'alert_detail_screen.dart';
 import 'settings_screen.dart';
@@ -11,10 +15,12 @@ class DashboardScreen extends StatefulWidget {
     super.key,
     required this.connection,
     required this.onDisconnect,
+    required this.onChangeServer,
   });
 
   final Connection connection;
   final Future<void> Function() onDisconnect;
+  final Future<void> Function() onChangeServer;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -140,9 +146,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       await _load(silent: true);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(describeError(error))),
-      );
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(describeError(error))));
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
@@ -194,7 +199,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return const Center(child: CircularProgressIndicator());
     }
     if (_summary == null) {
-      return _FullError(message: _error ?? 'Unable to load', onRetry: _load);
+      return ConnectionLostView(
+        message: _error ?? 'Unable to load',
+        serverUrl: widget.connection.baseUrl,
+        onRetry: _load,
+        onChangeServer: widget.onChangeServer,
+      );
     }
 
     final summary = _summary!;
@@ -389,9 +399,7 @@ class _ConnectionPill extends StatelessWidget {
             decoration: BoxDecoration(
               color: AppColors.high.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: AppColors.high.withValues(alpha: 0.4),
-              ),
+              border: Border.all(color: AppColors.high.withValues(alpha: 0.4)),
             ),
             child: Text(
               'Showing cached data — $warning',
@@ -580,7 +588,9 @@ class _DetectorFilters extends StatelessWidget {
         onSelected: (_) => onSelected(value),
         selectedColor: AppColors.cyan.withValues(alpha: 0.12),
         side: BorderSide(
-          color: active ? AppColors.cyan.withValues(alpha: 0.6) : AppColors.line,
+          color: active
+              ? AppColors.cyan.withValues(alpha: 0.6)
+              : AppColors.line,
         ),
         showCheckmark: false,
       ),
@@ -781,53 +791,229 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-class _FullError extends StatelessWidget {
-  const _FullError({required this.message, required this.onRetry});
+/// Shown when the first API call fails. It explains that the client is only a
+/// viewer, shows the exact command that starts the server, and offers a way to
+/// switch to another address without wiping and retyping everything.
+class ConnectionLostView extends StatelessWidget {
+  const ConnectionLostView({
+    super.key,
+    required this.message,
+    required this.serverUrl,
+    required this.onRetry,
+    required this.onChangeServer,
+  });
 
   final String message;
+  final String serverUrl;
   final Future<void> Function({bool silent}) onRetry;
+  final Future<void> Function() onChangeServer;
+
+  bool get _isPhone =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  String get _command => serveCommandFor(serverUrl, lan: _isPhone);
+
+  Future<void> _copyCommand(BuildContext context) async {
+    await Clipboard.setData(ClipboardData(text: _command));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('Start command copied')));
+  }
 
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.cloud_off_outlined,
-              color: AppColors.critical,
-              size: 44,
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'CONNECTION LOST',
-              style: TextStyle(
-                color: AppColors.text,
-                fontSize: 14,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 2,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.cloud_off_outlined,
+                color: AppColors.critical,
+                size: 44,
               ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: AppColors.muted,
-                fontSize: 11.5,
-                height: 1.5,
+              const SizedBox(height: 16),
+              const Text(
+                'CONNECTION LOST',
+                style: TextStyle(
+                  color: AppColors.text,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 2,
+                ),
               ),
-            ),
-            const SizedBox(height: 20),
-            FilledButton.icon(
-              onPressed: () => onRetry(),
-              icon: const Icon(Icons.refresh, size: 18),
-              label: const Text('RETRY'),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: AppColors.muted,
+                  fontSize: 11.5,
+                  height: 1.5,
+                ),
+              ),
+              const SizedBox(height: 16),
+              _AddressPill(url: serverUrl),
+              const SizedBox(height: 18),
+              _StartServerHint(
+                command: _command,
+                onCopy: () => _copyCommand(context),
+              ),
+              const SizedBox(height: 22),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(0, 50),
+                      padding: const EdgeInsets.symmetric(horizontal: 22),
+                    ),
+                    onPressed: () => onRetry(),
+                    icon: const Icon(Icons.refresh, size: 18),
+                    label: const Text('RETRY'),
+                  ),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.cyan,
+                      side: const BorderSide(color: AppColors.line),
+                      minimumSize: const Size(0, 50),
+                      padding: const EdgeInsets.symmetric(horizontal: 18),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      textStyle: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    onPressed: () => onChangeServer(),
+                    icon: const Icon(Icons.dns_outlined, size: 18),
+                    label: const Text('CHANGE SERVER'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
+      ),
+    );
+  }
+}
+
+class _AddressPill extends StatelessWidget {
+  const _AddressPill({required this.url});
+
+  final String url;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        color: AppColors.panel,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.dns_outlined, size: 14, color: AppColors.muted),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              url,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: AppColors.text, fontSize: 11.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StartServerHint extends StatelessWidget {
+  const _StartServerHint({required this.command, required this.onCopy});
+
+  final String command;
+  final VoidCallback onCopy;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassPanel(
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.terminal, color: AppColors.violet, size: 16),
+              SizedBox(width: 8),
+              Text(
+                'START THE API',
+                style: TextStyle(
+                  color: AppColors.violet,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.8,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'This app only displays alerts; it has no data of its own. Start '
+            'the server on your computer, keep that window open, then retry.',
+            style: TextStyle(
+              color: AppColors.muted,
+              fontSize: 11.5,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SelectableText(
+                    command,
+                    style: const TextStyle(
+                      color: AppColors.text,
+                      fontSize: 10.5,
+                      height: 1.6,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: onCopy,
+                  tooltip: 'Copy command',
+                  icon: const Icon(
+                    Icons.copy_all_outlined,
+                    size: 18,
+                    color: AppColors.cyan,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Use the same token that is saved in Settings.',
+            style: TextStyle(color: AppColors.muted, fontSize: 10.5),
+          ),
+        ],
       ),
     );
   }

@@ -100,7 +100,10 @@ void main() {
         token: ' secret ',
         httpClient: MockClient((request) async {
           expect(request.method, 'GET');
-          expect(request.url.toString(), 'http://example.test:8080/api/summary');
+          expect(
+            request.url.toString(),
+            'http://example.test:8080/api/summary',
+          );
           expect(request.headers['X-API-Token'], 'secret');
           return http.Response(
             '{"total_alerts":3,"by_severity":{"critical":1},'

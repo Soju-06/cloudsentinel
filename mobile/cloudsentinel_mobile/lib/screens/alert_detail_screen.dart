@@ -7,11 +7,7 @@ import '../api.dart';
 import '../theme.dart';
 
 class AlertDetailScreen extends StatelessWidget {
-  const AlertDetailScreen({
-    super.key,
-    required this.alert,
-    required this.host,
-  });
+  const AlertDetailScreen({super.key, required this.alert, required this.host});
 
   final AlertItem alert;
   final String host;

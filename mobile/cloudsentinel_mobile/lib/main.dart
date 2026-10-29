@@ -25,6 +25,8 @@ class _CloudSentinelAppState extends State<CloudSentinelApp> {
   static const _tokenKey = 'api_token';
 
   Connection? _connection;
+  String? _presetUrl;
+  String _presetToken = '';
   bool _ready = false;
 
   @override
@@ -65,7 +67,26 @@ class _CloudSentinelAppState extends State<CloudSentinelApp> {
     await prefs.setString(_urlKey, connection.baseUrl);
     await prefs.setString(_tokenKey, connection.token);
     if (!mounted) return;
-    setState(() => _connection = connection);
+    setState(() {
+      _connection = connection;
+      _presetUrl = null;
+      _presetToken = '';
+    });
+  }
+
+  /// Returns to the connect screen with the failed address pre-filled, so the
+  /// user can point the app at a server that is actually running.
+  Future<void> _changeServer() async {
+    final current = _connection;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_urlKey);
+    await prefs.remove(_tokenKey);
+    if (!mounted) return;
+    setState(() {
+      _presetUrl = current?.baseUrl;
+      _presetToken = current?.token ?? '';
+      _connection = null;
+    });
   }
 
   Future<void> _disconnect() async {
@@ -88,11 +109,16 @@ class _CloudSentinelAppState extends State<CloudSentinelApp> {
         child: !_ready
             ? const _SplashScreen()
             : connection == null
-            ? ConnectScreen(onConnected: _connect)
+            ? ConnectScreen(
+                onConnected: _connect,
+                initialUrl: _presetUrl,
+                initialToken: _presetToken.isEmpty ? null : _presetToken,
+              )
             : DashboardScreen(
                 key: ValueKey(connection.baseUrl),
                 connection: connection,
                 onDisconnect: _disconnect,
+                onChangeServer: _changeServer,
               ),
       ),
     );

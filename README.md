@@ -51,7 +51,7 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 - **Futuristic console** — dark glassmorphism theme, neon severity badges,
   Plotly charts, top-risk entities and one-click exports.
 - **Docker** — `Dockerfile` + `docker-compose.yml` for a reproducible console.
-- **156 automated Python tests** plus **15 Flutter tests** covering ingestion,
+- **156 automated Python tests** plus **23 Flutter tests** covering ingestion,
   every detector, storage, reporting, notifications, configuration, CLI, API
   auth/filters, hardening scenarios, the Dart API client and app boot flow.
 
@@ -306,6 +306,10 @@ Double-click `CloudSentinel.exe`, enter `http://127.0.0.1:8080` and your token.
 The connection is remembered. There is no installer and no administrator
 requirement — the folder can be copied anywhere.
 
+If the remembered server is no longer running, the app shows **CONNECTION LOST**
+with the exact `serve` command and a copy button, plus **RETRY** and
+**CHANGE SERVER** (which pre-fills the address so you only fix what changed).
+
 A shortcut can skip the connect screen:
 
 ```powershell
@@ -453,7 +457,7 @@ cloudsentinel/
 ├── mobile/cloudsentinel_mobile/ # native Flutter client (Android + web)
 │   ├── lib/api.dart             # typed API client + models
 │   ├── lib/screens/             # connect, dashboard, detail, settings
-│   ├── test/                    # 15 Dart unit/widget tests
+│   ├── test/                    # 23 Dart unit/widget tests
 │   ├── web/                     # boot splash, manifest, icons
 │   └── android/                 # manifest, icons, launch screen
 ├── windows/                     # WebView2 desktop shell + build script
@@ -509,9 +513,10 @@ flutter analyze
 flutter test
 ```
 
-15 tests covering URL normalisation, tolerant JSON parsing, token headers,
+23 tests covering URL normalisation, tolerant JSON parsing, token headers,
 401/403 handling, filter query encoding, network failures, timestamp
-formatting and the connect-screen boot/validation flow.
+formatting, the connect-screen boot/validation flow and the connection-recovery
+screen (serve command, clipboard copy, change-server prefill).
 
 ---
 

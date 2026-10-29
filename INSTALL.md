@@ -65,6 +65,10 @@ Environment variables work too: `CLOUDSENTINEL_API_TOKEN`,
    - **Server URL:** `http://127.0.0.1:8080`
    - **API token:** the token you passed to `serve`
 4. The connection is saved, so later launches go straight to the dashboard.
+5. If the saved server is not running, the app shows **CONNECTION LOST** with
+   the address it tried, the exact `serve` command, and two buttons:
+   **RETRY** and **CHANGE SERVER**. *Change server* forgets the saved address
+   but pre-fills the form with it, so you only edit the port or token.
 
 No installer and **no administrator rights** are needed. The folder is portable
 — copy it anywhere, including a USB stick.
@@ -102,6 +106,7 @@ Other flags:
 | `--token TOKEN` | token used with `--server` |
 | `--devtools` | enables F12 DevTools and the right-click menu |
 | `--probe` | writes viewport/DPI diagnostics to `%TEMP%\cloudsentinel-probe.txt` and exits |
+| `--screenshot FILE` | renders the page to a PNG off-screen, then exits (build QA) |
 | `F5` | reload the UI |
 
 ### Keyboard & window behaviour
@@ -159,7 +164,10 @@ adb install -r "C:\Users\SOJUS\Desktop\CYBER\dist\CloudSentinel-1.0.0.apk"
 5. Tap **Connect**. The app checks `/health` and `/api/summary` before saving.
 
 The connection is remembered, including the token, in Android's private app
-storage. Use **Settings → Disconnect** inside the app to forget it.
+storage. Use **Settings → Disconnect** inside the app to forget it, or tap
+**CHANGE SERVER** on the error screen when the saved server is unreachable.
+That screen also shows the `serve` command with `--host 0.0.0.0` already in it,
+which is what a phone needs.
 
 Android 9+ blocks plain HTTP by default; the manifest enables cleartext traffic
 so LAN testing works. See the security notes below before exposing the API
@@ -179,6 +187,7 @@ beyond a trusted network.
 | `[Errno 10048] address already in use` | Port 8080 is taken. Use `--port 8081`, then update the URL in the app. |
 | Phone cannot connect but browser can | Some routers isolate wireless clients (AP isolation). Use a hotspot or disable isolation. |
 | App stuck on the boot screen | Start the server first, then press F5 (Windows) or reopen the app. |
+| `CONNECTION LOST` on every launch | The app remembered a server that is no longer running. Start the server (the exact command is shown on that screen — use the copy button), or press **CHANGE SERVER** to point the app somewhere else. The address is pre-filled, so you only edit what changed. |
 
 Diagnostics:
 
@@ -201,7 +210,7 @@ Get-Content "$env:TEMP\cloudsentinel-probe.txt"
 ```powershell
 cd mobile\cloudsentinel_mobile
 flutter pub get
-flutter test                 # 15 tests
+flutter test                 # 23 tests
 flutter build apk --release
 # output: build\app\outputs\flutter-apk\app-release.apk
 ```

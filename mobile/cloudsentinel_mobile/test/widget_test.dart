@@ -36,13 +36,13 @@ void main() {
     expect(find.byType(ConnectScreen), findsOneWidget);
   });
 
-  testWidgets('connect screen shows the token field as masked', (
-    tester,
-  ) async {
+  testWidgets('connect screen shows the token field as masked', (tester) async {
     await tester.pumpWidget(const CloudSentinelApp());
     await tester.pumpAndSettle();
 
-    final fields = tester.widgetList<TextField>(find.byType(TextField)).toList();
+    final fields = tester
+        .widgetList<TextField>(find.byType(TextField))
+        .toList();
     expect(fields.length, 2);
     expect(fields[1].obscureText, isTrue);
     expect(find.byIcon(Icons.visibility_outlined), findsOneWidget);

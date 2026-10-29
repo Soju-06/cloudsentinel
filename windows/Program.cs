@@ -35,6 +35,7 @@ namespace CloudSentinel
         private readonly WebView2 _browser;
         private readonly bool _devTools;
         private readonly bool _probe;
+        private readonly string _screenshotPath;
         private string _serverUrl;
         private string _token;
         private LocalServer _server;
@@ -53,6 +54,10 @@ namespace CloudSentinel
                 else if (args[index] == "--token" && index + 1 < args.Length)
                 {
                     _token = args[++index];
+                }
+                else if (args[index] == "--screenshot" && index + 1 < args.Length)
+                {
+                    _screenshotPath = args[++index];
                 }
             }
 
@@ -160,7 +165,11 @@ namespace CloudSentinel
 
                 _browser.Source = new Uri(BuildStartUrl(port));
 
-                if (_probe)
+                if (!string.IsNullOrEmpty(_screenshotPath))
+                {
+                    await RunScreenshot();
+                }
+                else if (_probe)
                 {
                     await RunProbe();
                 }
@@ -178,6 +187,32 @@ namespace CloudSentinel
                 );
                 Close();
             }
+        }
+
+        /// <summary>
+        /// Renders the current page to a PNG using WebView2's own compositor,
+        /// so the capture works even when another window covers the app. Used
+        /// for build verification and visual regression checks.
+        /// </summary>
+        private async Task RunScreenshot()
+        {
+            await Task.Delay(9000);
+            string target = Path.GetFullPath(_screenshotPath);
+            string directory = Path.GetDirectoryName(target);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            using (FileStream stream = File.Create(target))
+            {
+                await _browser.CoreWebView2.CapturePreviewAsync(
+                    CoreWebView2CapturePreviewImageFormat.Png,
+                    stream
+                );
+            }
+
+            Application.Exit();
         }
 
         /// <summary>

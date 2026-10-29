@@ -133,10 +133,12 @@ notification transports, configuration, CLI round trips, REST API auth/filters/
 pagination/scan gating and end-to-end sample data. A genuine AWS CloudWatch
 Logs subscription fixture lives in `tests/fixtures/`.
 
-The Flutter client adds 15 Dart tests (`flutter test`): URL normalisation,
+The Flutter client adds 23 Dart tests (`flutter test`): URL normalisation,
 tolerant model parsing, token headers, 401/403 error paths, filter query
-encoding, network failure handling, timestamp formatting and connect-screen
-widget behaviour. `flutter analyze` reports no issues.
+encoding, network failure handling, timestamp formatting, connect-screen
+widget behaviour, and the connection-recovery flow (serve-command builder,
+copy-to-clipboard, change-server prefill and preference clearing).
+`flutter analyze` reports no issues.
 
 ## Hardening & scale (Phase 12)
 - CloudWatch Logs subscription payloads (`logEvents[].message`) unwrapped.
@@ -159,6 +161,10 @@ widget behaviour. `flutter analyze` reports no issues.
 - Flutter client in `mobile/cloudsentinel_mobile`: neon theme, connection gate
   with health check, metric cards, severity/detector chips, search, alert feed,
   detail view with evidence and copy-to-clipboard, settings with diagnostics.
+- Connection-recovery screen: when the saved server is unreachable, the client
+  shows the attempted address, the exact `serve` command (with `--host 0.0.0.0`
+  on Android) plus a copy button, RETRY, and CHANGE SERVER — which forgets the
+  saved connection but pre-fills the form with it.
 - Release APK built with Flutter/Gradle; copy at
   `dist/CloudSentinel-1.0.0.apk` (debug signing, sideload only).
 - Android manifest: `INTERNET`, `ACCESS_NETWORK_STATE`, cleartext enabled for
@@ -225,7 +231,7 @@ widget behaviour. `flutter analyze` reports no issues.
 
 ## Project status
 Phases 0–14 complete and verified:
-- 156/156 Python tests passing; 15/15 Flutter tests passing; `flutter analyze`
+- 156/156 Python tests passing; 23/23 Flutter tests passing; `flutter analyze`
   reports no issues.
 - Demo dataset: 210 events → 10 alerts (5 critical, 5 high), all four engines.
 - Dashboard headless run: 0 exceptions, 3 tabs, 3 actions, 4 export formats.
@@ -233,8 +239,11 @@ Phases 0–14 complete and verified:
   `/api/summary` is rejected with 401, token requests return the summary.
 - Android release APK rebuilt from final source and copied to
   `dist/CloudSentinel-1.0.0.apk` (49.8 MB, debug signing; sideload).
+  SHA-256 `AFCDDB5894E5EE14E8D9BD13D2949F85F18EDAB51F96336EF59C09106751979E`.
 - Windows app built at `app/CloudSentinel.exe` (20.7 MB) and verified live
   against the API; viewport/DPI probe matches the window at 125 % scaling.
+- Connection-recovery screen verified by off-screen render in both states:
+  server offline (error screen with command) and server online (dashboard).
 - Benchmark: ~5.6 s median for 100k events (~18k events/s end-to-end) on a
   quiet machine; slower when antivirus is active.
 - Docker CLI unavailable on the development machine, so image build untested.
