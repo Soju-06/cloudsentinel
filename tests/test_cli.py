@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from cloudsentinel.cli import main
+from cloudsentinel.db import AlertStore
 
 
 def test_cli_demo_and_report(tmp_path, capsys):
@@ -77,3 +78,43 @@ def test_cli_init(tmp_path):
     db_path = tmp_path / "alerts.db"
     assert main(["init", "-d", str(db_path)]) == 0
     assert db_path.exists()
+
+
+def test_cli_triage(tmp_path, make_alert, capsys):
+    db_path = tmp_path / "alerts.db"
+    store = AlertStore(db_path).init()
+    alert_id = store.upsert(make_alert())[1]
+
+    assert (
+        main(
+            [
+                "triage",
+                str(alert_id),
+                "-d",
+                str(db_path),
+                "--status",
+                "acknowledged",
+                "--assignee",
+                "alice",
+            ]
+        )
+        == 0
+    )
+    alert = store.get(alert_id)
+    assert alert is not None
+    assert alert.status == "acknowledged"
+    assert alert.assignee == "alice"
+    assert "acknowledged" in capsys.readouterr().out
+
+    assert (
+        main(["triage", str(alert_id), "-d", str(db_path), "--clear-assignee"])
+        == 0
+    )
+    assert store.get(alert_id).assignee is None
+
+    # No change requested, unknown alert, and an illegal transition.
+    assert main(["triage", str(alert_id), "-d", str(db_path)]) == 2
+    assert main(["triage", "999", "-d", str(db_path), "--status", "closed"]) == 1
+
+    store.set_triage(alert_id, status="closed")
+    assert main(["triage", str(alert_id), "-d", str(db_path), "--status", "acknowledged"]) == 2

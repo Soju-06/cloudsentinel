@@ -6,15 +6,131 @@ import 'package:flutter/services.dart';
 import '../api.dart';
 import '../theme.dart';
 
-class AlertDetailScreen extends StatelessWidget {
-  const AlertDetailScreen({super.key, required this.alert, required this.host});
+class AlertDetailScreen extends StatefulWidget {
+  const AlertDetailScreen({
+    super.key,
+    required this.alert,
+    required this.host,
+    required this.api,
+    this.onChanged,
+  });
 
   final AlertItem alert;
   final String host;
+  final ApiClient api;
+  final VoidCallback? onChanged;
+
+  @override
+  State<AlertDetailScreen> createState() => _AlertDetailScreenState();
+}
+
+class _AlertDetailScreenState extends State<AlertDetailScreen> {
+  late AlertItem _alert;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _alert = widget.alert;
+  }
+
+  String get _statusLabel => _alert.status.toUpperCase();
+
+  Future<void> _apply({
+    String? status,
+    String? assignee,
+    bool updateAssignee = false,
+  }) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final updated = await widget.api.updateTriage(
+        _alert.id,
+        status: status,
+        assignee: assignee,
+        updateAssignee: updateAssignee,
+      );
+      if (!mounted) return;
+      setState(() => _alert = updated);
+      widget.onChanged?.call();
+      final owner = updated.assignee == null ? '' : ' · ${updated.assignee}';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Alert #${updated.id} is now '
+            '${updated.status}$owner')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _error = describeError(error));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _assign() async {
+    final controller = TextEditingController(text: _alert.assignee ?? '');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.panel,
+        title: const Text(
+          'ASSIGN ALERT',
+          style: TextStyle(fontSize: 14, letterSpacing: 1.6),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'analyst@example.com'),
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('CANCEL'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(''),
+            child: const Text('CLEAR'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+            child: const Text('ASSIGN'),
+          ),
+        ],
+      ),
+    );
+    final value = result?.trim();
+    controller.dispose();
+    if (result == null) return;
+    await _apply(
+      assignee: (value == null || value.isEmpty) ? null : value,
+      updateAssignee: true,
+    );
+  }
+
+  Widget _action(String label, VoidCallback onPressed) {
+    return OutlinedButton(
+      onPressed: _busy ? null : onPressed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppColors.cyan,
+        side: const BorderSide(color: AppColors.line),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        textStyle: const TextStyle(
+          fontSize: 10.5,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.1,
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+      child: Text(label),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final color = AppColors.forSeverity(alert.severity);
+    final color = AppColors.forSeverity(_alert.severity);
     return Scaffold(
       appBar: AppBar(
         title: const Text('ALERT DETAIL'),
@@ -41,11 +157,11 @@ class AlertDetailScreen extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    _Badge(label: alert.severity.toUpperCase(), color: color),
+                    _Badge(label: _alert.severity.toUpperCase(), color: color),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        (detectorLabels[alert.detector] ?? alert.detector)
+                        (detectorLabels[_alert.detector] ?? _alert.detector)
                             .toUpperCase(),
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -57,7 +173,7 @@ class AlertDetailScreen extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      '#${alert.id}',
+                      '#${_alert.id}',
                       style: const TextStyle(
                         color: AppColors.muted,
                         fontSize: 10,
@@ -67,7 +183,7 @@ class AlertDetailScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  alert.title,
+                  _alert.title,
                   style: const TextStyle(
                     color: AppColors.text,
                     fontSize: 18,
@@ -75,10 +191,10 @@ class AlertDetailScreen extends StatelessWidget {
                     height: 1.3,
                   ),
                 ),
-                if (alert.description.isNotEmpty) ...[
+                if (_alert.description.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   Text(
-                    alert.description,
+                    _alert.description,
                     style: const TextStyle(
                       color: AppColors.muted,
                       fontSize: 12,
@@ -89,7 +205,77 @@ class AlertDetailScreen extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
+          _Section(
+            title: 'TRIAGE',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    _Badge(
+                      label: _statusLabel,
+                      color: AppColors.forStatus(_alert.status),
+                    ),
+                    const SizedBox(width: 10),
+                    const Icon(
+                      Icons.person_outline,
+                      size: 14,
+                      color: AppColors.muted,
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        _alert.assignee ?? 'Unassigned',
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: _alert.assignee == null
+                              ? AppColors.muted
+                              : AppColors.text,
+                          fontSize: 11.5,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                if (_error != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    _error!,
+                    style: const TextStyle(
+                      color: AppColors.critical,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (_alert.status == 'open')
+                      _action(
+                        'ACKNOWLEDGE',
+                        () => _apply(status: 'acknowledged'),
+                      ),
+                    if (_alert.status != 'closed')
+                      _action('CLOSE', () => _apply(status: 'closed')),
+                    if (_alert.status == 'closed')
+                      _action('REOPEN', () => _apply(status: 'open')),
+                    _action('ASSIGN', _assign),
+                    if (_busy)
+                      const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
           _Section(
             title: 'ENTITY',
             child: Row(
@@ -98,7 +284,7 @@ class AlertDetailScreen extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: SelectableText(
-                    alert.entity,
+                    _alert.entity,
                     style: const TextStyle(
                       color: AppColors.cyan,
                       fontSize: 13,
@@ -106,9 +292,9 @@ class AlertDetailScreen extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (alert.entityType.isNotEmpty)
+                if (_alert.entityType.isNotEmpty)
                   Text(
-                    alert.entityType.toUpperCase(),
+                    _alert.entityType.toUpperCase(),
                     style: const TextStyle(
                       color: AppColors.muted,
                       fontSize: 9,
@@ -125,17 +311,17 @@ class AlertDetailScreen extends StatelessWidget {
               children: [
                 _KeyValue(
                   label: 'FIRST SEEN',
-                  value: absoluteTime(alert.firstSeen),
+                  value: absoluteTime(_alert.firstSeen),
                 ),
                 const SizedBox(height: 8),
                 _KeyValue(
                   label: 'LAST SEEN',
-                  value: absoluteTime(alert.lastSeen),
+                  value: absoluteTime(_alert.lastSeen),
                 ),
                 const SizedBox(height: 8),
                 _KeyValue(
                   label: 'RELATIVE',
-                  value: relativeTime(alert.lastSeen),
+                  value: relativeTime(_alert.lastSeen),
                 ),
               ],
             ),
@@ -148,7 +334,7 @@ class AlertDetailScreen extends StatelessWidget {
                 Expanded(
                   child: _Stat(
                     label: 'EVENTS',
-                    value: '${alert.eventCount}',
+                    value: '${_alert.eventCount}',
                     color: AppColors.high,
                   ),
                 ),
@@ -156,7 +342,7 @@ class AlertDetailScreen extends StatelessWidget {
                 Expanded(
                   child: _Stat(
                     label: 'SOURCE',
-                    value: host,
+                    value: widget.host,
                     color: AppColors.violet,
                     small: true,
                   ),
@@ -167,13 +353,13 @@ class AlertDetailScreen extends StatelessWidget {
           const SizedBox(height: 12),
           _Section(
             title: 'EVIDENCE',
-            child: alert.evidence.isEmpty
+            child: _alert.evidence.isEmpty
                 ? const Text(
                     'No structured evidence returned by the server.',
                     style: TextStyle(color: AppColors.muted, fontSize: 11),
                   )
                 : Column(
-                    children: alert.evidence.entries
+                    children: _alert.evidence.entries
                         .map(
                           (entry) => _EvidenceRow(
                             label: entry.key,
@@ -187,7 +373,7 @@ class AlertDetailScreen extends StatelessWidget {
           _Section(
             title: 'FINGERPRINT',
             child: SelectableText(
-              alert.fingerprint,
+              _alert.fingerprint,
               style: const TextStyle(
                 color: AppColors.muted,
                 fontSize: 10.5,
@@ -202,18 +388,21 @@ class AlertDetailScreen extends StatelessWidget {
 
   Future<void> _copy(BuildContext context) async {
     final payload = const JsonEncoder.withIndent('  ').convert({
-      'id': alert.id,
-      'fingerprint': alert.fingerprint,
-      'detector': alert.detector,
-      'severity': alert.severity,
-      'title': alert.title,
-      'description': alert.description,
-      'entity': alert.entity,
-      'entity_type': alert.entityType,
-      'event_count': alert.eventCount,
-      'first_seen': alert.firstSeen?.toIso8601String(),
-      'last_seen': alert.lastSeen?.toIso8601String(),
-      'evidence': alert.evidence,
+      'id': _alert.id,
+      'fingerprint': _alert.fingerprint,
+      'detector': _alert.detector,
+      'severity': _alert.severity,
+      'status': _alert.status,
+      'assignee': _alert.assignee,
+      'triaged_at': _alert.triagedAt?.toIso8601String(),
+      'title': _alert.title,
+      'description': _alert.description,
+      'entity': _alert.entity,
+      'entity_type': _alert.entityType,
+      'event_count': _alert.eventCount,
+      'first_seen': _alert.firstSeen?.toIso8601String(),
+      'last_seen': _alert.lastSeen?.toIso8601String(),
+      'evidence': _alert.evidence,
     });
     await Clipboard.setData(ClipboardData(text: payload));
     if (!context.mounted) return;

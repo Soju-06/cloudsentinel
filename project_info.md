@@ -3,9 +3,9 @@
 ## Overview
 CloudSentinel is a Python cloud-security monitoring and threat-detection lab.
 It ingests cloud audit logs, normalises them into a vendor-neutral schema, runs
-four detection engines, persists de-duplicated alerts in SQLite, and presents
-them in a futuristic Streamlit console with CSV/JSON/HTML/PDF reporting and
-Slack/webhook/email notifications. A FastAPI service exposes the same alert
+four detection engines, persists de-duplicated alerts in SQLite, supports
+acknowledge/assign/close triage, and presents them in a futuristic Streamlit
+console with CSV/JSON/HTML/PDF reporting and Slack/webhook/email notifications. A FastAPI service exposes the same alert
 store to native Flutter clients: a sideloadable Android APK and a portable
 Windows desktop app.
 
@@ -20,6 +20,8 @@ automated tests and first-class AWS CloudTrail support.
 - Flag potentially public cloud storage (bucket policies and canned ACLs).
 - Detect potentially excessive IAM permissions (wildcards, admin policies).
 - Display alerts with severity levels in a Streamlit dashboard.
+- Triage alerts (acknowledge, assign, close, reopen) from the dashboard, CLI,
+  REST API and mobile client; state survives rescans.
 - Export security reports as CSV/JSON/HTML/PDF.
 - Notify Slack, generic webhooks and SMTP recipients.
 - Automated pytest suite, CloudTrail/CloudWatch adapters, gzip ingestion.
@@ -118,35 +120,41 @@ python -m cloudsentinel serve --host 0.0.0.0 --token SECRET \
 python -m cloudsentinel tokens add --label phone   # rotating token
 python -m cloudsentinel tokens list
 python -m cloudsentinel tokens revoke phone
+python -m cloudsentinel triage 12 --status acknowledged --assignee analyst@example.com
+python -m cloudsentinel triage 12 --status closed
 streamlit run cloudsentinel/dashboard.py  # console
-python -m pytest                          # 192 tests (1 skipped)
+python -m pytest                          # 214 tests (1 skipped)
 python scripts/benchmark.py --events 100000
 ```
 
 ## Dashboard
 - OVERVIEW: severity donut, alert timeline, detections by engine, top-risk
   entities.
-- ALERT FEED: severity badges, entity, event counts, timestamps.
+- ALERT FEED: severity/status badges, entity, event counts, timestamps, plus a
+  triage console (select alert, set status, assign/clear assignee).
 - EXPORTS: CSV/JSON/HTML/PDF downloads and JSON summary.
-- Sidebar: filters, on-demand scan, demo loader, send-alerts action, status.
+- Sidebar: severity/detector/status filters, on-demand scan, demo loader,
+  send-alerts action, open-alert count.
 
 ## Test suite
-192 pytest tests (1 skipped on Windows) covering ingestion (JSON/JSONL/CSV/gzip/
+214 pytest tests (1 skipped on Windows) covering ingestion (JSON/JSONL/CSV/gzip/
 CloudTrail/CloudWatch Logs), duplicate IDs, corrupt records, timezone handling,
 detector boundaries and severity matrices, cross-IP correlation, impossible
 travel, SQLite merge/suppression behaviour, report shapes (including PDF magic
 bytes), notification transports, configuration, CLI round trips, REST API
 auth/filters/pagination/scan gating, API hardening (token rotation, rate limits,
-CORS, security headers, TLS flags, certificate SANs) and end-to-end sample data.
+CORS, security headers, TLS flags, certificate SANs), triage transitions,
+in-place database migration, rescan persistence, triage API/status filters and
+end-to-end sample data.
 A genuine AWS CloudWatch Logs subscription fixture lives in `tests/fixtures/`.
 
-The Flutter client adds 25 Dart tests (`flutter test`): URL normalisation,
-tolerant model parsing, token headers, 401/403 error paths, filter query
-encoding, network failure handling, timestamp formatting, connect-screen
-widget behaviour, the connection-recovery flow (serve-command builder,
-copy-to-clipboard, change-server prefill and preference clearing) and the golf
-animation (one-shot play, replay on retry, reduced-motion fallback).
-`flutter analyze` reports no issues.
+The Flutter client adds 29 Dart tests (`flutter test`): URL normalisation,
+tolerant model parsing, token headers, 401/403/409 error paths, filter query
+encoding, triage PATCH bodies and assignee clearing, network failure handling,
+timestamp formatting, connect-screen widget behaviour, the connection-recovery
+flow (serve-command builder, copy-to-clipboard, change-server prefill and
+preference clearing) and the golf animation (one-shot play, replay on retry,
+reduced-motion fallback). `flutter analyze` reports no issues.
 
 ## Hardening & scale (Phase 12)
 - CloudWatch Logs subscription payloads (`logEvents[].message`) unwrapped.
@@ -234,6 +242,31 @@ animation (one-shot play, replay on retry, reduced-motion fallback).
 - Documentation: `SECURITY.md` (threat model, rotation runbook, TLS/Android
   caveat, deployment checklist) plus refreshed `INSTALL.md` and `README.md`.
 
+## Alert triage (Phase 17)
+- `cloudsentinel/triage.py` — workflow state machine:
+  `open → acknowledged → closed`, plus reopening (`closed → open`). Assigning an
+  open alert acknowledges it implicitly; statuses are case-insensitive and
+  invalid moves raise dedicated errors.
+- `AlertStore` gained `status`, `assignee` and `triaged_at` columns with an
+  in-place migration for existing databases. `set_triage` validates
+  transitions, clears assignees, and re-scans (insert/update/merge) never reset
+  the analyst's decision. `fetch_alerts(status=...)` filters the workflow.
+- `PATCH /api/alerts/{id}` accepts `{"status": ..., "assignee": ...}`; an
+  explicit `null` assignee clears it, an empty body is rejected with 400,
+  unknown statuses with 400 and illegal moves with 409. `GET /api/alerts`
+  filters by status; `/api/summary` returns `by_status`; `/api/detectors`
+  lists the workflow statuses.
+- Streamlit console: status filter, status badge in the feed and a triage
+  console (select alert, set status, assign or clear assignee). Exports include
+  `status` and `assignee`.
+- Mobile client: status chip on each alert card, TRIAGE filter chips, and
+  status/assignee display with ACKNOWLEDGE / CLOSE / REOPEN / ASSIGN actions in
+  the detail screen; the dashboard refreshes after each change.
+- CLI: `python -m cloudsentinel triage <id> --status ... --assignee ...`
+  (`--clear-assignee` to unassign).
+- Tests: `tests/test_triage.py` (workflow, migration, persistence, API) plus
+  Dart coverage for PATCH bodies, clearing and 409 handling.
+
 ## Design decisions
 - Generic-first schema keeps the detectors vendor-neutral.
 - CloudTrail adapter maps `eventName`, `errorCode`, `sourceIPAddress`,
@@ -259,7 +292,8 @@ animation (one-shot play, replay on retry, reduced-motion fallback).
   deployments would need a shared store and secret manager.
 - CloudTrail ingestion is file/export based, not a live event stream.
 - Detections are batch-only; there is no streaming, baselining or threat intel.
-- Alerts have no triage workflow (acknowledge/assign/close).
+- Triage is intentionally minimal: status + assignee, with no comments, SLA
+  timers, bulk actions or immutable audit trail.
 - The Docker image was not built in this environment (no Docker CLI).
 - The APK is debug-signed, Android-only, has no push notifications and no
   offline cache.
@@ -282,17 +316,23 @@ animation (one-shot play, replay on retry, reduced-motion fallback).
    (Phase 15).
 10. ✅ Secure API & network: rotation, TLS, rate limits, CORS, security docs
     (Phase 16).
-11. ⬜ Alert triage state, streaming ingestion, per-user auth.
-12. ⬜ Additional detections (MFA/root/key/security-group/CloudTrail tampering).
+11. ✅ Alert triage state: acknowledge/assign/close/reopen across the dashboard,
+    API, CLI and mobile client (Phase 17).
+12. ⬜ Streaming ingestion, per-user auth and additional detections
+    (MFA/root/key/security-group/CloudTrail tampering).
 
 ## Project status
-Phases 0–16 complete and verified:
-- 191 Python tests passing (1 skipped on Windows); 25/25 Flutter tests passing;
-  `flutter analyze` reports no issues.
+Phases 0–17 complete and verified:
+- 213 Python tests passing (1 skipped on Windows); 29/29 Flutter tests passing
+  and `flutter analyze` reports no issues (Flutter 3.47 / Dart 3.13).
+- Triage verified by tests: workflow transitions, in-place migration of a
+  legacy database, persistence across rescans, PATCH auth/400/409/404 paths and
+  status-filtered queries and exports.
 - Demo dataset: 210 events → 10 alerts (5 critical, 5 high), all four engines.
 - Dashboard headless run: 0 exceptions, 3 tabs, 3 actions, 4 export formats.
-- API verified live: `/health` returns version 0.3.0 and 10 alerts, tokenless
-  `/api/summary` is rejected with 401, token requests return the summary.
+- API verified live: `/health` reports version 0.4.0 and the alert count,
+  tokenless `/api/summary` is rejected with 401, token requests return the
+  summary, and `PATCH /api/alerts/{id}` drives triage (covered by tests).
 - Security verified live: HTTPS on 8443 with a generated certificate (health
   200, no token 401, `X-API-Token` 200, bearer 200, 6th request 429 with
   `retry-after: 60`); plain-HTTP LAN banner warns about unencrypted tokens.

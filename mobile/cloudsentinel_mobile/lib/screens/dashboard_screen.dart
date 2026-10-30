@@ -39,6 +39,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String? _error;
   String? _severity;
   String? _detector;
+  String? _status;
   String _search = '';
   DateTime? _updatedAt;
   int _request = 0;
@@ -71,6 +72,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final page = await _api.fetchAlerts(
         severity: _severity,
         detector: _detector,
+        status: _status,
         search: _search,
         limit: 200,
       );
@@ -101,6 +103,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (_detector == value) return;
     setState(() => _detector = value);
     _load(silent: true);
+  }
+
+  void _setStatus(String? value) {
+    if (_status == value) return;
+    setState(() => _status = value);
+    _load(silent: true);
+  }
+
+  Future<void> _openAlert(AlertItem alert) async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AlertDetailScreen(
+          alert: alert,
+          host: widget.connection.host,
+          api: _api,
+        ),
+      ),
+    );
+    if (mounted) await _load(silent: true);
   }
 
   void _submitSearch(String value) {
@@ -276,6 +297,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           const SizedBox(height: 8),
           _DetectorFilters(selected: _detector, onSelected: _setDetector),
           const SizedBox(height: 14),
+          _SectionLabel(label: 'TRIAGE'),
+          const SizedBox(height: 8),
+          _StatusFilters(selected: _status, onSelected: _setStatus),
+          const SizedBox(height: 14),
           TextField(
             controller: _searchController,
             textInputAction: TextInputAction.search,
@@ -312,14 +337,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _AlertCard(
                   alert: alert,
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => AlertDetailScreen(
-                        alert: alert,
-                        host: widget.connection.host,
-                      ),
-                    ),
-                  ),
+                  onTap: () => _openAlert(alert),
                 ),
               ),
             ),
@@ -599,6 +617,59 @@ class _DetectorFilters extends StatelessWidget {
   }
 }
 
+class _StatusFilters extends StatelessWidget {
+  const _StatusFilters({required this.selected, required this.onSelected});
+
+  final String? selected;
+  final ValueChanged<String?> onSelected;
+
+  static const _labels = <String?, String>{
+    null: 'ALL',
+    'open': 'OPEN',
+    'acknowledged': 'ACK',
+    'closed': 'CLOSED',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (final entry in _labels.entries)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(
+                  entry.value,
+                  style: TextStyle(
+                    color: selected == entry.key
+                        ? AppColors.forStatus(entry.key ?? 'open')
+                        : AppColors.muted,
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                selected: selected == entry.key,
+                onSelected: (_) => onSelected(entry.key),
+                selectedColor: AppColors.forStatus(entry.key ?? 'open')
+                    .withValues(alpha: 0.12),
+                side: BorderSide(
+                  color: selected == entry.key
+                      ? AppColors.forStatus(entry.key ?? 'open')
+                          .withValues(alpha: 0.6)
+                      : AppColors.line,
+                ),
+                showCheckmark: false,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _AlertCard extends StatelessWidget {
   const _AlertCard({required this.alert, required this.onTap});
 
@@ -643,6 +714,8 @@ class _AlertCard extends StatelessWidget {
                             severity: alert.severity,
                             color: color,
                           ),
+                          const SizedBox(width: 6),
+                          _StatusBadge(status: alert.status),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
@@ -754,6 +827,45 @@ class _SeverityBadge extends StatelessWidget {
           fontSize: 8,
           fontWeight: FontWeight.w800,
           letterSpacing: 0.9,
+        ),
+      ),
+    );
+  }
+}
+
+class _StatusBadge extends StatelessWidget {
+  const _StatusBadge({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = AppColors.forStatus(status);
+    String label;
+    switch (status.toLowerCase()) {
+      case 'acknowledged':
+        label = 'ACK';
+        break;
+      case 'closed':
+        label = 'CLOSED';
+        break;
+      default:
+        label = 'OPEN';
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 7.5,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.8,
         ),
       ),
     );

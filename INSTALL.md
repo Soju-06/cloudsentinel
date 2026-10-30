@@ -214,6 +214,10 @@ Diagnostics:
 curl.exe http://127.0.0.1:8080/health
 curl.exe -H "X-API-Token: CHANGE_ME" http://127.0.0.1:8080/api/summary
 
+# triage alert 1 (status: open | acknowledged | closed; assignee null clears)
+curl.exe -X PATCH -H "X-API-Token: CHANGE_ME" -H "Content-Type: application/json" `
+  -d '{"status":"acknowledged","assignee":"me"}' http://127.0.0.1:8080/api/alerts/1
+
 # Windows shell viewport/DPI report
 .\app\CloudSentinel.exe --probe
 Get-Content "$env:TEMP\cloudsentinel-probe.txt"

@@ -33,6 +33,7 @@ from cloudsentinel.report import (  # noqa: E402
     summary,
 )
 from cloudsentinel.severity import Severity  # noqa: E402
+from cloudsentinel.triage import STATUSES, TriageError  # noqa: E402
 from cloudsentinel.utils import truncate, utcnow  # noqa: E402
 
 SEVERITY_ORDER = [
@@ -326,6 +327,9 @@ section[data-testid="stSidebar"] .block-container { padding-top: 1.4rem; }
     border: 1px solid rgba(0, 229, 255, 0.24); background: rgba(0, 229, 255, 0.05);
     white-space: nowrap;
 }
+.pill.status-open { color: #8be9ff; border-color: rgba(0, 229, 255, 0.4); background: rgba(0, 229, 255, 0.07); }
+.pill.status-acknowledged { color: #ffd39c; border-color: rgba(255, 159, 10, 0.42); background: rgba(255, 159, 10, 0.08); }
+.pill.status-closed { color: #a9f0bd; border-color: rgba(48, 209, 88, 0.4); background: rgba(48, 209, 88, 0.08); }
 
 /* ---------------------------------------------------------------- risk list */
 .risk-row { display: flex; align-items: center; gap: 0.8rem; padding: 0.55rem 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
@@ -411,6 +415,14 @@ def main() -> None:
             label_visibility="collapsed",
             placeholder="Detector filter",
         )
+        statuses = st.multiselect(
+            "Status",
+            options=list(STATUSES),
+            default=list(STATUSES),
+            format_func=lambda value: value.upper(),
+            label_visibility="collapsed",
+            placeholder="Triage status filter",
+        )
         window_label = st.selectbox(
             "Time window", list(WINDOWS), index=1, label_visibility="collapsed"
         )
@@ -421,17 +433,20 @@ def main() -> None:
         st.markdown('<div class="side-section">SYSTEM</div>', unsafe_allow_html=True)
         raw_files = _count_raw_files()
         last_scan = store.last_scan_time() or "never"
+        triage_stats = store.stats()
         st.markdown(
             f'<div class="sys-card">DB <b>{html.escape(DEFAULT_DB_PATH.name)}</b><br>'
             f'RAW FILES <b>{raw_files}</b><br>'
             f'LAST SCAN <b>{html.escape(last_scan)}</b><br>'
-            f'ALERTS <b>{store.count()}</b></div>',
+            f'ALERTS <b>{store.count()}</b><br>'
+            f'OPEN <b>{triage_stats["by_status"].get("open", 0)}</b></div>',
             unsafe_allow_html=True,
         )
 
     alerts = store.fetch_alerts(
         severity=severities or None,
         detector=detectors or None,
+        status=statuses or None,
     )
     frame = alerts_dataframe(alerts)
     frame = _apply_filters(frame, window_label, search)
@@ -462,7 +477,7 @@ def main() -> None:
         _render_overview(frame)
 
     with feed_tab:
-        _render_feed(frame)
+        _render_feed(frame, store)
 
     with export_tab:
         _render_exports(frame)
@@ -618,7 +633,7 @@ def _render_overview(frame: pd.DataFrame) -> None:
         st.markdown(_risk_list_html(frame), unsafe_allow_html=True)
 
 
-def _render_feed(frame: pd.DataFrame) -> None:
+def _render_feed(frame: pd.DataFrame, store: AlertStore) -> None:
     subtitle = (
         f"{len(frame)} finding(s) — newest first · "
         f"showing up to 200 rows"
@@ -628,6 +643,61 @@ def _render_feed(frame: pd.DataFrame) -> None:
         unsafe_allow_html=True,
     )
     st.markdown(_feed_html(frame), unsafe_allow_html=True)
+    _render_triage_console(frame, store)
+
+
+def _render_triage_console(frame: pd.DataFrame, store: AlertStore) -> None:
+    visible = list(frame.head(200).itertuples(index=False))
+    if not visible:
+        return
+
+    choices = {f"#{int(row.id)} — {row.title}": int(row.id) for row in visible}
+    current = {
+        int(row.id): str(getattr(row, "status", "open") or "open")
+        for row in visible
+    }
+
+    st.markdown('<div class="chart-title">TRIAGE CONSOLE</div>', unsafe_allow_html=True)
+    with st.form("triage_form"):
+        selected = st.selectbox("Alert", list(choices), key="triage_alert")
+        status = st.selectbox(
+            "New status",
+            list(STATUSES),
+            index=list(STATUSES).index(current.get(choices[selected], "open")),
+            format_func=lambda value: value.upper(),
+            key="triage_status",
+        )
+        assignee = st.text_input(
+            "Assignee",
+            placeholder="analyst@example.com",
+            key="triage_assignee",
+        )
+        clear_assignee = st.checkbox(
+            "Clear assignee", value=False, key="triage_clear_assignee"
+        )
+        submitted = st.form_submit_button("APPLY TRIAGE")
+
+    if not submitted:
+        return
+
+    try:
+        alert = store.set_triage(
+            choices[selected],
+            status=status,
+            assignee=assignee or None,
+            update_assignee=bool(assignee.strip()) or clear_assignee,
+        )
+    except TriageError as exc:
+        st.error(str(exc))
+        return
+
+    if alert is None:
+        st.error("Alert no longer exists — refresh the feed.")
+        return
+
+    owner = f" · {alert.assignee}" if alert.assignee else ""
+    st.toast(f"Alert #{alert.id} → {alert.status}{owner}")
+    st.rerun()
 
 
 def _render_exports(frame: pd.DataFrame) -> None:
@@ -852,10 +922,12 @@ def _feed_html(frame: pd.DataFrame, limit: int = 200) -> str:
             if pd.notna(last_seen)
             else "—"
         )
+        status = str(getattr(record, "status", "open") or "open").lower()
         rows.append(
             f"""
             <tr>
                 <td><span class="badge {severity.value}">{severity.label}</span></td>
+                <td><span class="pill status-{html.escape(status)}">{html.escape(status.upper())}</span></td>
                 <td>
                     <div class="alert-title">{html.escape(str(record.title))}</div>
                     <div class="alert-desc">{html.escape(truncate(str(record.description), 220))}</div>
@@ -873,8 +945,9 @@ def _feed_html(frame: pd.DataFrame, limit: int = 200) -> str:
         <table class="alert-table">
             <thead>
                 <tr>
-                    <th>SEVERITY</th><th>FINDING</th><th>DETECTOR</th>
-                    <th>ENTITY</th><th>EVENTS</th><th>LAST SEEN</th>
+                    <th>SEVERITY</th><th>STATUS</th><th>FINDING</th>
+                    <th>DETECTOR</th><th>ENTITY</th><th>EVENTS</th>
+                    <th>LAST SEEN</th>
                 </tr>
             </thead>
             <tbody>{''.join(rows)}</tbody>

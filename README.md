@@ -30,6 +30,10 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
   URL-encoded policy documents.
 - **Hybrid storage** — raw events stay in files (`data/raw/`); only alerts are
   persisted in SQLite for history, filtering and de-duplication.
+- **Alert triage** — acknowledge, assign, close and reopen alerts from the
+  Streamlit console, the `triage` CLI command or the mobile app. Triage state
+  is validated by a small state machine, survives rescans and appears in
+  filters and exports.
 - **Zero-duplicate rescans** — fingerprints + a suppression window merge repeat
   findings instead of flooding the dashboard. Duplicate CloudTrail deliveries
   are skipped by event ID during ingestion.
@@ -40,7 +44,8 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
   with environment-variable secrets and redacted logs.
 - **Reporting** — CSV, JSON, standalone HTML and PDF exports.
 - **REST API** — FastAPI service (`serve` command) exposing summary, alerts,
-  filters, pagination, detector metadata and an opt-in remote scan trigger.
+  triage updates, filters, pagination, detector metadata and an opt-in remote
+  scan trigger.
   Hardened by default: bearer or `X-API-Token` auth, a rotating file-backed token
   store, native HTTPS, per-client rate limiting, loopback-only CORS, security
   headers and uniform errors (`SECURITY.md`).
@@ -53,10 +58,11 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 - **Futuristic console** — dark glassmorphism theme, neon severity badges,
   Plotly charts, top-risk entities and one-click exports.
 - **Docker** — `Dockerfile` + `docker-compose.yml` for a reproducible console.
-- **192 automated Python tests** (191 pass, 1 skipped on Windows) plus
-  **25 Flutter tests** covering ingestion, every detector, storage, reporting,
+- **214 automated Python tests** (213 pass, 1 skipped on Windows) plus
+  **29 Flutter tests** covering ingestion, every detector, storage, reporting,
   notifications, configuration, CLI, API auth/rotation/rate limits/TLS,
-  hardening scenarios, the Dart API client and app boot flow.
+  triage and status transitions, hardening scenarios, the Dart API client and
+  app boot flow.
 
 ---
 
@@ -251,10 +257,11 @@ python -m cloudsentinel serve --host 0.0.0.0 --port 8443 --token YOUR_TOKEN `
 | Endpoint | Auth | Purpose |
 |---|---|---|
 | `GET /health` | public | version, stored alert count, auth/scan/rate-limit posture |
-| `GET /api/summary` | token | totals by severity/detector, entities, DB stats |
-| `GET /api/alerts` | token | filtered/paginated alerts (`severity`, `detector`, `search`, `since`, `until`, `limit`, `offset`) |
+| `GET /api/summary` | token | totals by severity/detector/status, entities, DB stats |
+| `GET /api/alerts` | token | filtered/paginated alerts (`severity`, `detector`, `status`, `search`, `since`, `until`, `limit`, `offset`) |
 | `GET /api/alerts/{id}` | token | one alert including evidence |
-| `GET /api/detectors` | token | detector labels for client filter chips |
+| `PATCH /api/alerts/{id}` | token | triage: `{"status": "...", "assignee": "..."}` (null clears the assignee) |
+| `GET /api/detectors` | token | detector labels and workflow statuses for client chips |
 | `POST /api/scan` | token | re-scan `data/raw` (only with `--allow-scan`) |
 
 **Authentication.** Send the token as `X-API-Token: <token>` or
@@ -266,6 +273,16 @@ fingerprints:
 python -m cloudsentinel tokens add --label phone   # printed once
 python -m cloudsentinel tokens list                # labels + fingerprints
 python -m cloudsentinel tokens revoke phone        # effective next request
+```
+
+**Triage.** Alerts move through `open → acknowledged → closed → open`
+(reopening). Assigning an open alert acknowledges it implicitly; send
+`assignee: null` (or `--clear-assignee`) to unassign.
+
+```powershell
+python -m cloudsentinel triage 12 --status acknowledged --assignee analyst@example.com
+python -m cloudsentinel triage 12 --status closed
+python -m cloudsentinel triage 12 --status open --clear-assignee
 ```
 
 Revoking the last token locks the API rather than opening it. When no token and
@@ -511,7 +528,7 @@ cloudsentinel/
 ├── scripts/benchmark.py         # 100k-event performance harness
 ├── scripts/generate_sample_data.py
 ├── scripts/make_dev_cert.py      # self-signed TLS certificate generator
-├── tests/                       # 192 pytest tests + real AWS fixture
+├── tests/                       # 214 pytest tests + real AWS fixture
 ├── Dockerfile
 ├── docker-compose.yml
 ├── cloudsentinel.example.toml
@@ -526,7 +543,7 @@ cloudsentinel/
 python -m pytest
 ```
 
-192 Python tests (1 skipped on Windows) covering:
+214 Python tests (1 skipped on Windows) covering:
 
 - generic JSON / JSONL / CSV, gzip, CloudTrail `Records` and CloudWatch Logs
   wrappers (including a genuine AWS subscription fixture)
@@ -539,6 +556,8 @@ python -m pytest
   false-positive guards
 - wildcard permissions, admin attachments and URL-encoded policies
 - SQLite insert / update / merge / suppression / filters
+- triage state machine, in-place schema migration, assignment/close/reopen,
+  rescan persistence, `PATCH /api/alerts/{id}` and status filters
 - CSV/JSON/HTML/PDF report shapes, HTML escaping and PDF magic bytes
 - Slack/webhook SMTP delivery with mocked transports and secret redaction
 - configuration loading, CLI round trips and end-to-end sample data
@@ -556,11 +575,12 @@ flutter analyze
 flutter test
 ```
 
-25 tests covering URL normalisation, tolerant JSON parsing, token headers,
-401/403 handling, filter query encoding, network failures, timestamp
-formatting, the connect-screen boot/validation flow, the connection-recovery
-screen (serve command, clipboard copy, change-server prefill) and the golf
-animation (plays once, replays on retry, respects reduced motion).
+29 tests covering URL normalisation, tolerant JSON parsing, token headers,
+401/403 handling, filter query encoding, triage PATCH requests and workflow
+conflicts, network failures, timestamp formatting, the connect-screen
+boot/validation flow, the connection-recovery screen (serve command, clipboard
+copy, change-server prefill) and the golf animation (plays once, replays on
+retry, respects reduced motion).
 
 ---
 
@@ -604,12 +624,13 @@ product. The honest gap list, roughly in value order:
   CloudTrail Lake queries for near-real-time coverage.
 - No threat-intel enrichment (known-bad IPs, Tor exit nodes) and no
   entity baselining/anomaly scoring.
-- No case management: alerts cannot be acknowledged, assigned, commented on or
-  closed, so triage state is lost between sessions.
+- Triage is deliberately small: status + assignee, no comments, SLA timers,
+  bulk actions or immutable audit trail. Multi-analyst use still needs a
+  shared backend.
 
 **Clients**
-- The Android APK is debug-signed and read-only; there is no Play Store
-  pipeline, push notification, offline cache or background sync.
+- The Android APK is debug-signed; it views and triages alerts but there is no
+  Play Store pipeline, push notification, offline cache or background sync.
 - The Windows app wraps the Flutter web build in WebView2 rather than using
   Flutter's native Windows runner (that requires the MSVC toolchain). It works
   offline for the shell, but the UI still needs the API to show alerts.
@@ -624,13 +645,13 @@ product. The honest gap list, roughly in value order:
 - No infrastructure-as-code, no schema/versioning policy for stored evidence.
 
 **Suggested next three features** (highest impact for effort):
-1. **Alert triage state** — acknowledge/assign/close with notes, surfaced in
-   both the dashboard and mobile app.
-2. **Streaming ingestion** — S3/SQS poller or EventBridge webhook so findings
+1. **Streaming ingestion** — S3/SQS poller or EventBridge webhook so findings
    appear without manual scans.
-3. **Per-user auth** — OIDC for the console and scoped API keys; TLS and token
-   rotation are already in place, identity is the remaining gate for a shared
-   environment.
+2. **Per-user auth** — OIDC for the console and scoped API keys; TLS, token
+   rotation and triage are already in place, identity is the remaining gate
+   for a shared environment.
+3. **Additional detections** — MFA/root/access-key/security-group/CloudTrail
+   tampering rules to widen coverage beyond the current four engines.
 
 ---
 

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .severity import Severity
+from .triage import normalize_status
 from .utils import to_iso
 
 
@@ -29,9 +30,14 @@ class Alert:
     id: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    status: str = "open"
+    assignee: str | None = None
+    triaged_at: datetime | None = None
 
     def __post_init__(self) -> None:
         self.severity = Severity.parse(self.severity)
+        self.status = normalize_status(self.status)
+        self.assignee = (self.assignee or "").strip() or None
         self.first_seen = _ensure_aware(self.first_seen)
         self.last_seen = _ensure_aware(self.last_seen)
         if self.first_seen > self.last_seen:
@@ -57,6 +63,9 @@ class Alert:
             "evidence": self.evidence,
             "created_at": to_iso(self.created_at) if self.created_at else None,
             "updated_at": to_iso(self.updated_at) if self.updated_at else None,
+            "status": self.status,
+            "assignee": self.assignee,
+            "triaged_at": to_iso(self.triaged_at) if self.triaged_at else None,
         }
 
 

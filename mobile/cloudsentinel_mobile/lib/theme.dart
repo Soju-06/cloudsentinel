@@ -17,6 +17,17 @@ class AppColors {
   static const low = Color(0xFF30D158);
   static const info = Color(0xFF64D2FF);
 
+  static Color forStatus(String status) {
+    switch (status.toLowerCase()) {
+      case 'acknowledged':
+        return high;
+      case 'closed':
+        return low;
+      default:
+        return cyan;
+    }
+  }
+
   static Color forSeverity(String severity) {
     switch (severity.toLowerCase()) {
       case 'critical':

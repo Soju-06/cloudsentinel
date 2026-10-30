@@ -31,8 +31,10 @@ Two rules are enforced in code rather than documented as advice:
 1. **A token store on disk means authentication is on.** Revoking the last token
    locks the API instead of silently reopening it. An operator who wants an open
    API must delete `data/api_tokens.json` deliberately.
-2. **The scan endpoint is opt-in.** `POST /api/scan` is the only write-shaped
-   endpoint and stays disabled unless you ask for it.
+2. **Write endpoints are narrow and guarded.** `POST /api/scan` is opt-in and
+   stays disabled unless you ask for it. `PATCH /api/alerts/{id}` can only
+   change triage state (`status`, `assignee`), always requires a valid token,
+   and rejects malformed values or workflow violations.
 
 ---
 
@@ -55,9 +57,10 @@ Two rules are enforced in code rather than documented as advice:
 ### Out of scope (by design)
 
 - **User accounts.** There is one shared secret per client, not identities. Any
-  valid token has full read access to every alert and its evidence.
-- **Read auditing.** Requests are logged by uvicorn to the console, not to a
-  tamper-evident audit trail.
+  valid token can read every alert and its evidence, and can triage it; the
+  triage `assignee` is a free-form label, not an authenticated identity.
+- **Tamper-evident auditing.** Requests are logged by uvicorn to the console, not
+  to an append-only audit trail; triage history keeps only the last decision.
 - **Multi-tenant isolation.** One database, one owner.
 - **Internet exposure.** There is no account lockout, CAPTCHA, WAF or DDoS
   protection. Use a VPN or an authenticated reverse proxy if you need remote

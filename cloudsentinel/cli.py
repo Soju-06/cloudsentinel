@@ -26,6 +26,7 @@ from .paths import DEFAULT_DB_PATH, RAW_DIR
 from .pipeline import scan_files
 from .report import export_csv, export_html, export_json, export_pdf, summary
 from .severity import Severity, sort_key
+from .triage import STATUSES, TriageError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,6 +141,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    triage = subparsers.add_parser(
+        "triage", help="acknowledge, assign, close or reopen an alert"
+    )
+    triage.add_argument("alert_id", type=int, help="alert id")
+    triage.add_argument(
+        "--status",
+        choices=list(STATUSES),
+        default=None,
+        help="new workflow state",
+    )
+    triage.add_argument("--assignee", default=None, help="analyst name")
+    triage.add_argument(
+        "--clear-assignee", action="store_true", help="remove the current assignee"
+    )
+    triage.add_argument("-d", "--db", default=str(DEFAULT_DB_PATH), help="alerts database")
+
     tokens = subparsers.add_parser(
         "tokens", help="manage rotating API tokens (add, list, revoke)"
     )
@@ -182,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
         return _serve(args)
     if args.command == "tokens":
         return _tokens(args)
+    if args.command == "triage":
+        return _triage(args)
     return 1
 
 
@@ -478,6 +497,35 @@ def _tokens(args: argparse.Namespace) -> int:
         return 1
 
     return 2
+
+
+def _triage(args: argparse.Namespace) -> int:
+    if args.status is None and not args.assignee and not args.clear_assignee:
+        print("Nothing to change: pass --status, --assignee or --clear-assignee.")
+        return 2
+
+    store = AlertStore(args.db)
+    try:
+        alert = store.set_triage(
+            args.alert_id,
+            status=args.status,
+            assignee=args.assignee,
+            update_assignee=bool(args.assignee) or args.clear_assignee,
+        )
+    except TriageError as exc:
+        print(f"error: {exc}")
+        return 2
+
+    if alert is None:
+        print(f"Alert #{args.alert_id} not found in {store.path}.")
+        return 1
+
+    assignee = alert.assignee or "unassigned"
+    print(
+        f"Alert #{alert.id}: {alert.status} "
+        f"({alert.severity.label}, {alert.title}) -> {assignee}"
+    )
+    return 0
 
 
 def _init(args: argparse.Namespace) -> int:

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cloudsentinel_mobile/api.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -61,18 +62,28 @@ void main() {
           'source_ips': ['203.0.113.99'],
           'failures': 6,
         },
+        'status': 'acknowledged',
+        'assignee': 'alice',
+        'triaged_at': '2026-04-01T10:06:00Z',
       });
 
       expect(alert.id, 7);
       expect(alert.firstSeen, isNotNull);
       expect(alert.lastSeen!.isAfter(alert.firstSeen!), isTrue);
       expect(alert.evidence['failures'], 6);
+      expect(alert.status, 'acknowledged');
+      expect(alert.assignee, 'alice');
+      expect(alert.triagedAt, isNotNull);
 
       final sparse = AlertItem.fromJson(const {'id': 1});
       expect(sparse.title, 'Untitled finding');
       expect(sparse.severity, 'info');
       expect(sparse.evidence, isEmpty);
       expect(sparse.firstSeen, isNull);
+      // Older servers predate triage; treat missing fields as open.
+      expect(sparse.status, 'open');
+      expect(sparse.assignee, isNull);
+      expect(sparse.triagedAt, isNull);
     });
 
     test('alerts page ignores malformed entries', () {
@@ -157,16 +168,105 @@ void main() {
       final page = await client.fetchAlerts(
         severity: 'high',
         detector: 'public_storage',
+        status: 'open',
         search: ' bucket ',
         limit: 50,
       );
 
       expect(seen.queryParameters['severity'], 'high');
       expect(seen.queryParameters['detector'], 'public_storage');
+      expect(seen.queryParameters['status'], 'open');
       expect(seen.queryParameters['search'], 'bucket');
       expect(seen.queryParameters['limit'], '50');
       expect(page.total, 1);
       expect(page.alerts.single.entity, 'bucket-a');
+    });
+
+    test('updateTriage sends PATCH and parses the response', () async {
+      late http.Request seen;
+      final client = ApiClient(
+        baseUrl: 'http://example.test',
+        token: 'secret',
+        httpClient: MockClient((request) async {
+          seen = request;
+          return http.Response(
+            '{"id":7,"status":"acknowledged","assignee":"alice",'
+            '"title":"Repeated failed logins","severity":"high",'
+            '"triaged_at":"2026-10-30T12:00:00Z"}',
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      final alert = await client.updateTriage(
+        7,
+        status: 'acknowledged',
+        assignee: 'alice',
+        updateAssignee: true,
+      );
+
+      expect(seen.method, 'PATCH');
+      expect(seen.url.path, '/api/alerts/7');
+      expect(seen.headers['X-API-Token'], 'secret');
+      expect(seen.headers['content-type'], contains('application/json'));
+      expect(
+        jsonDecode(seen.body),
+        {'status': 'acknowledged', 'assignee': 'alice'},
+      );
+      expect(alert.status, 'acknowledged');
+      expect(alert.assignee, 'alice');
+      expect(alert.triagedAt, isNotNull);
+    });
+
+    test('updateTriage can clear the assignee with null', () async {
+      late http.Request seen;
+      final client = ApiClient(
+        baseUrl: 'http://example.test',
+        httpClient: MockClient((request) async {
+          seen = request;
+          return http.Response('{"id":1,"status":"open"}', 200);
+        }),
+      );
+
+      await client.updateTriage(1, assignee: null, updateAssignee: true);
+
+      expect(jsonDecode(seen.body), {'assignee': null});
+      expect(seen.body, contains('"assignee":null'));
+    });
+
+    test('updateTriage surfaces workflow conflicts', () async {
+      final client = ApiClient(
+        baseUrl: 'http://example.test',
+        httpClient: MockClient(
+          (_) async => http.Response(
+            '{"detail":"cannot move an alert from closed to acknowledged"}',
+            409,
+          ),
+        ),
+      );
+
+      await expectLater(
+        client.updateTriage(1, status: 'acknowledged'),
+        throwsA(
+          isA<ApiException>()
+              .having((error) => error.statusCode, 'statusCode', 409)
+              .having(
+                (error) => error.message,
+                'message',
+                contains('cannot move'),
+              ),
+        ),
+      );
+    });
+
+    test('updateTriage requires a change', () async {
+      final client = ApiClient(baseUrl: 'http://example.test');
+
+      await expectLater(
+        client.updateTriage(1),
+        throwsA(isA<ApiException>()),
+      );
     });
 
     test('scan surfaces disabled and success responses', () async {

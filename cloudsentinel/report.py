@@ -13,11 +13,14 @@ import pandas as pd
 from .models import Alert
 from .paths import REPORTS_DIR
 from .severity import Severity, sort_key
+from .triage import DEFAULT_STATUS, STATUSES
 from .utils import utcnow
 
 EXPORT_COLUMNS = [
     "id",
     "severity",
+    "status",
+    "assignee",
     "detector",
     "title",
     "entity",
@@ -62,9 +65,13 @@ def alerts_dataframe(alerts: AlertLike) -> pd.DataFrame:
 def summary(alerts: AlertLike) -> dict[str, Any]:
     frame = alerts_dataframe(alerts)
     by_severity = {severity.value: 0 for severity in Severity}
+    by_status = {status: 0 for status in STATUSES}
     if not frame.empty:
         for value, count in frame["severity"].value_counts().items():
             by_severity[str(value)] = int(count)
+        statuses = frame["status"].fillna(DEFAULT_STATUS).astype(str).str.lower()
+        for value, count in statuses.value_counts().items():
+            by_status[str(value)] = int(count)
 
     by_detector: dict[str, int] = {}
     entities: list[str] = []
@@ -79,6 +86,7 @@ def summary(alerts: AlertLike) -> dict[str, Any]:
         "generated_at": utcnow().isoformat(timespec="seconds"),
         "total_alerts": int(len(frame)),
         "by_severity": by_severity,
+        "by_status": by_status,
         "by_detector": by_detector,
         "affected_entities": len(entities),
         "entities": entities,

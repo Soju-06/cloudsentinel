@@ -65,6 +65,9 @@ class AlertItem {
     required this.firstSeen,
     required this.lastSeen,
     required this.evidence,
+    this.status = 'open',
+    this.assignee,
+    this.triagedAt,
   });
 
   final int id;
@@ -79,6 +82,9 @@ class AlertItem {
   final DateTime? firstSeen;
   final DateTime? lastSeen;
   final Map<String, dynamic> evidence;
+  final String status;
+  final String? assignee;
+  final DateTime? triagedAt;
 
   factory AlertItem.fromJson(Map<String, dynamic> json) {
     return AlertItem(
@@ -96,6 +102,9 @@ class AlertItem {
       evidence: (json['evidence'] is Map)
           ? Map<String, dynamic>.from(json['evidence'] as Map)
           : const {},
+      status: json['status'] as String? ?? 'open',
+      assignee: json['assignee'] as String?,
+      triagedAt: _date(json['triaged_at']),
     );
   }
 }
@@ -200,16 +209,76 @@ class ApiClient {
   Future<AlertsPage> fetchAlerts({
     String? severity,
     String? detector,
+    String? status,
     String? search,
     int limit = 200,
   }) async {
     final query = <String, String>{'limit': '$limit'};
     if (severity != null && severity.isNotEmpty) query['severity'] = severity;
     if (detector != null && detector.isNotEmpty) query['detector'] = detector;
+    if (status != null && status.isNotEmpty) query['status'] = status;
     if (search != null && search.trim().isNotEmpty) {
       query['search'] = search.trim();
     }
     return AlertsPage.fromJson(await _get('/api/alerts', query));
+  }
+
+  /// Acknowledge, assign, close or reopen one alert.
+  ///
+  /// Pass [updateAssignee] with [assignee] set to a name, or `null` to clear
+  /// it. Omitted parameters are left untouched by the server.
+  Future<AlertItem> updateTriage(
+    int alertId, {
+    String? status,
+    String? assignee,
+    bool updateAssignee = false,
+  }) async {
+    if (status == null && !updateAssignee) {
+      throw ApiException('Nothing to update', 400);
+    }
+
+    final body = <String, dynamic>{
+      'status': ?status,
+      if (updateAssignee) 'assignee': assignee,
+    };
+
+    http.Response response;
+    try {
+      response = await _client
+          .patch(
+            _uri('/api/alerts/$alertId'),
+            headers: {..._headers, 'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+    } on TimeoutException {
+      throw ApiException('Connection timed out. Is the server running?');
+    } on http.ClientException {
+      throw ApiException('Cannot reach $baseUrl');
+    }
+
+    if (response.statusCode == 401) {
+      throw ApiException('Invalid or missing API token', 401);
+    }
+    if (response.statusCode == 200) {
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) {
+        throw ApiException('Unexpected response from server');
+      }
+      return AlertItem.fromJson(decoded);
+    }
+
+    final detail = _detail(response.body);
+    if (response.statusCode == 404) {
+      throw ApiException(detail ?? 'Alert not found', 404);
+    }
+    if (response.statusCode == 409) {
+      throw ApiException(detail ?? 'That status change is not allowed', 409);
+    }
+    throw ApiException(
+      detail ?? 'Server returned HTTP ${response.statusCode}',
+      response.statusCode,
+    );
   }
 
   Future<Map<String, dynamic>> scan({bool reset = false}) async {
@@ -246,6 +315,18 @@ int _asInt(Object? value) {
 DateTime? _date(Object? value) {
   if (value is! String || value.isEmpty) return null;
   return DateTime.tryParse(value);
+}
+
+String? _detail(String body) {
+  try {
+    final decoded = jsonDecode(body);
+    if (decoded is Map && decoded['detail'] is String) {
+      return decoded['detail'] as String;
+    }
+  } catch (_) {
+    // Not JSON: fall back to a generic message.
+  }
+  return null;
 }
 
 String describeError(Object error) {

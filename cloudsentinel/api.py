@@ -11,6 +11,7 @@ Endpoints
 ``GET  /api/summary``     severity/detector totals
 ``GET  /api/alerts``      filtered, paginated alert list
 ``GET  /api/alerts/{id}`` one alert with evidence
+``PATCH /api/alerts/{id}`` acknowledge / assign / close one alert
 ``GET  /api/detectors``   detector metadata for client filters
 ``POST /api/scan``        re-scan the raw directory (opt-in)
 
@@ -37,6 +38,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import Config
@@ -47,6 +49,12 @@ from .ratelimit import SlidingWindowLimiter
 from .report import summary
 from .severity import Severity
 from .tokens import TokenStore
+from .triage import (
+    STATUSES,
+    InvalidStatusError,
+    InvalidTransitionError,
+    TriageError,
+)
 from .utils import parse_timestamp, to_iso, utcnow
 
 logger = logging.getLogger(__name__)
@@ -86,6 +94,21 @@ _OPEN_HEADERS = {
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
 }
+
+MAX_ASSIGNEE_LENGTH = 120
+
+
+class TriageUpdate(BaseModel):
+    """Partial triage update; omitted fields are left untouched."""
+
+    status: str | None = Field(
+        default=None,
+        description="open, acknowledged or closed",
+    )
+    assignee: str | None = Field(
+        default=None,
+        description="Analyst name; send null to clear the current assignee",
+    )
 
 
 def create_app(
@@ -160,14 +183,14 @@ def create_app(
         app.add_middleware(
             CORSMiddleware,
             allow_origin_regex=_LOOPBACK_ORIGIN,
-            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
             allow_headers=["*"],
         )
     elif cors_origins:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(cors_origins),
-            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
             allow_headers=["*"],
         )
 
@@ -250,11 +273,16 @@ def create_app(
     def api_summary() -> dict[str, Any]:
         alerts = alerts_store.fetch_alerts()
         payload = summary(alerts)
+        database = alerts_store.stats()
+        by_status = {
+            status: database["by_status"].get(status, 0) for status in STATUSES
+        }
         payload.update(
             {
                 "version": __version__,
                 "server_time": to_iso(utcnow()),
-                "database": alerts_store.stats(),
+                "database": database,
+                "by_status": by_status,
                 "scan_enabled": scan_enabled,
             }
         )
@@ -264,6 +292,7 @@ def create_app(
     def api_alerts(
         severity: Annotated[list[str] | None, Query()] = None,
         detector: Annotated[list[str] | None, Query()] = None,
+        status: Annotated[list[str] | None, Query()] = None,
         search: str | None = None,
         since: str | None = None,
         until: str | None = None,
@@ -276,10 +305,13 @@ def create_app(
             alerts = alerts_store.fetch_alerts(
                 severity=severity or None,
                 detector=detector or None,
+                status=status or None,
                 search=search or None,
                 since=since_iso,
                 until=until_iso,
             )
+        except TriageError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -300,11 +332,41 @@ def create_app(
             raise HTTPException(status_code=404, detail="alert not found")
         return alert.to_dict()
 
+    @app.patch("/api/alerts/{alert_id}", dependencies=guarded, tags=["alerts"])
+    def api_triage(alert_id: int, payload: TriageUpdate) -> dict[str, Any]:
+        if not payload.model_fields_set:
+            raise HTTPException(
+                status_code=400,
+                detail="provide a status and/or assignee to update",
+            )
+        if payload.assignee is not None and len(payload.assignee) > MAX_ASSIGNEE_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=f"assignee must be at most {MAX_ASSIGNEE_LENGTH} characters",
+            )
+
+        try:
+            alert = alerts_store.set_triage(
+                alert_id,
+                status=payload.status,
+                assignee=payload.assignee,
+                update_assignee="assignee" in payload.model_fields_set,
+            )
+        except InvalidStatusError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except InvalidTransitionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        if alert is None:
+            raise HTTPException(status_code=404, detail="alert not found")
+        return alert.to_dict()
+
     @app.get("/api/detectors", dependencies=guarded, tags=["meta"])
     def api_detectors() -> dict[str, Any]:
         return {
             "detectors": DETECTORS,
             "severities": [severity.value for severity in Severity],
+            "statuses": list(STATUSES),
         }
 
     @app.post("/api/scan", dependencies=guarded, tags=["scan"])
