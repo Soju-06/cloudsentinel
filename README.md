@@ -40,8 +40,10 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
   with environment-variable secrets and redacted logs.
 - **Reporting** — CSV, JSON, standalone HTML and PDF exports.
 - **REST API** — FastAPI service (`serve` command) exposing summary, alerts,
-  filters, pagination, detector metadata and an opt-in remote scan trigger,
-  protected by a shared `X-API-Token`.
+  filters, pagination, detector metadata and an opt-in remote scan trigger.
+  Hardened by default: bearer or `X-API-Token` auth, a rotating file-backed token
+  store, native HTTPS, per-client rate limiting, loopback-only CORS, security
+  headers and uniform errors (`SECURITY.md`).
 - **Native Android app** — a real Flutter APK (not a WebView wrapper) with the
   same neon design: metrics, severity/detector filters, search, alert detail,
   evidence viewer, connection diagnostics and an optional one-tap scan.
@@ -51,9 +53,10 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 - **Futuristic console** — dark glassmorphism theme, neon severity badges,
   Plotly charts, top-risk entities and one-click exports.
 - **Docker** — `Dockerfile` + `docker-compose.yml` for a reproducible console.
-- **156 automated Python tests** plus **25 Flutter tests** covering ingestion,
-  every detector, storage, reporting, notifications, configuration, CLI, API
-  auth/filters, hardening scenarios, the Dart API client and app boot flow.
+- **192 automated Python tests** (191 pass, 1 skipped on Windows) plus
+  **25 Flutter tests** covering ingestion, every detector, storage, reporting,
+  notifications, configuration, CLI, API auth/rotation/rate limits/TLS,
+  hardening scenarios, the Dart API client and app boot flow.
 
 ---
 
@@ -198,6 +201,9 @@ python -m cloudsentinel notify [-d DB] [-c CONFIG] [--min-severity ...]
 python -m cloudsentinel init [-d DB]
 python -m cloudsentinel demo [-o RAW_DIR] [--seed N]
 python -m cloudsentinel serve [--host H] [--port P] [--token T] [--allow-scan]
+                              [--tls-cert PEM --tls-key PEM] [--rate-limit N]
+                              [--token-file PATH] [--cors ORIGINS]
+python -m cloudsentinel tokens add|list|revoke [--label L] [--token-file PATH]
 ```
 
 Examples:
@@ -230,30 +236,56 @@ records skipped by event ID, so data-quality problems are visible.
 The mobile app and any other client read from a small FastAPI service:
 
 ```powershell
-# Local development (open, no token)
+# Local development (open — only because nothing is bound to the network)
 python -m cloudsentinel serve
 
-# Phone on the same Wi-Fi (token required, LAN-visible)
+# Phone on the same Wi-Fi: token required, LAN-visible
 python -m cloudsentinel serve --host 0.0.0.0 --port 8080 --token YOUR_TOKEN --allow-scan
+
+# Same, over HTTPS with a development certificate
+python scripts\make_dev_cert.py --out certs
+python -m cloudsentinel serve --host 0.0.0.0 --port 8443 --token YOUR_TOKEN `
+  --tls-cert certs\cloudsentinel-dev.pem --tls-key certs\cloudsentinel-dev-key.pem
 ```
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /health` | public | version, stored alert count, auth/scan flags |
+| `GET /health` | public | version, stored alert count, auth/scan/rate-limit posture |
 | `GET /api/summary` | token | totals by severity/detector, entities, DB stats |
 | `GET /api/alerts` | token | filtered/paginated alerts (`severity`, `detector`, `search`, `since`, `until`, `limit`, `offset`) |
 | `GET /api/alerts/{id}` | token | one alert including evidence |
 | `GET /api/detectors` | token | detector labels for client filter chips |
 | `POST /api/scan` | token | re-scan `data/raw` (only with `--allow-scan`) |
 
-Authentication uses the `X-API-Token` header. When no token is configured the
-API is open — acceptable only on localhost or a trusted LAN. CORS defaults to
-`*` for browser clients and can be narrowed with `--cors`.
+**Authentication.** Send the token as `X-API-Token: <token>` or
+`Authorization: Bearer <token>`. `--token` is the bootstrap value; for anything
+longer-lived use the rotating store, which keeps only salted SHA-256
+fingerprints:
 
-Interactive docs: http://localhost:8080/docs
+```powershell
+python -m cloudsentinel tokens add --label phone   # printed once
+python -m cloudsentinel tokens list                # labels + fingerprints
+python -m cloudsentinel tokens revoke phone        # effective next request
+```
+
+Revoking the last token locks the API rather than opening it. When no token and
+no store exist the API is open — acceptable only on loopback.
+
+**Defaults that matter.** Rate limit 120 requests/minute per client+token
+(`--rate-limit`, scans get one tenth), loopback-only CORS (`--cors '*'` to
+override), `POST /api/scan` disabled, and uniform JSON errors. `/health` is
+exempt from rate limiting and reports `auth_mode`, `auth_required` and the
+limits in force.
+
+Interactive docs: `http://localhost:8080/docs`, or `https://…` when TLS is
+enabled.
 
 Environment equivalents: `CLOUDSENTINEL_API_TOKEN`,
-`CLOUDSENTINEL_API_ALLOW_SCAN=true`.
+`CLOUDSENTINEL_API_ALLOW_SCAN=true`, `CLOUDSENTINEL_RATE_LIMIT`,
+`CLOUDSENTINEL_TOKEN_FILE`.
+
+The full threat model, TLS/Android caveat and deployment checklist are in
+**[`SECURITY.md`](SECURITY.md)**.
 
 ---
 
@@ -281,8 +313,10 @@ The ready-to-sideload build is also copied to **`dist/CloudSentinel-1.0.0.apk`**
 
 The server prints the correct LAN URL at startup. Android 9+ blocks plain HTTP
 by default; the manifest enables cleartext traffic so LAN testing works. For
-anything beyond a lab, terminate TLS in front of the API (Caddy/nginx) and use
-an `https://` URL.
+shared networks, serve HTTPS with `--tls-cert/--tls-key` — but note that
+Flutter's HTTP stack does not trust the Android user CA store, so a self-signed
+certificate works for browsers and the Windows app, while the APK needs a
+publicly trusted certificate (see `SECURITY.md`).
 
 The APK uses Flutter's generated debug signing config, which is fine for
 sideloading and demos but **not** suitable for Google Play. Replace it with your
@@ -452,9 +486,11 @@ cloudsentinel/
 │   ├── models.py                # Alert dataclass + fingerprints
 │   ├── notify.py                # Slack / webhook / SMTP notifications
 │   ├── pipeline.py              # orchestration and persistence
+│   ├── ratelimit.py             # per-client sliding-window limiter
 │   ├── report.py                # CSV / JSON / HTML / PDF exports
 │   ├── sampledata.py            # deterministic incident dataset
 │   ├── severity.py              # CRITICAL/HIGH/MEDIUM/LOW/INFO
+│   ├── tokens.py                # rotating API token store (salted hashes)
 │   └── utils.py                 # timestamp + JSON helpers
 ├── mobile/cloudsentinel_mobile/ # native Flutter client (Android + web)
 │   ├── lib/api.dart             # typed API client + models
@@ -469,11 +505,13 @@ cloudsentinel/
 ├── app/CloudSentinel.exe        # portable Windows app (ready to run)
 ├── dist/CloudSentinel-1.0.0.apk # sideloadable release build
 ├── INSTALL.md                   # server + Windows + Android install guide
+├── SECURITY.md                  # threat model, TLS, tokens, deployment rules
 ├── data/raw/                    # source-of-truth audit logs
 ├── reports/                     # generated exports
 ├── scripts/benchmark.py         # 100k-event performance harness
 ├── scripts/generate_sample_data.py
-├── tests/                       # 156 pytest tests + real AWS fixture
+├── scripts/make_dev_cert.py      # self-signed TLS certificate generator
+├── tests/                       # 192 pytest tests + real AWS fixture
 ├── Dockerfile
 ├── docker-compose.yml
 ├── cloudsentinel.example.toml
@@ -488,7 +526,7 @@ cloudsentinel/
 python -m pytest
 ```
 
-156 Python tests covering:
+192 Python tests (1 skipped on Windows) covering:
 
 - generic JSON / JSONL / CSV, gzip, CloudTrail `Records` and CloudWatch Logs
   wrappers (including a genuine AWS subscription fixture)
@@ -506,6 +544,9 @@ python -m pytest
 - configuration loading, CLI round trips and end-to-end sample data
 - REST API token auth, summary/list/detail shapes, filtering, pagination,
   invalid timestamps, scan gating and OpenAPI docs
+- API hardening: bootstrap + rotating tokens, constant-time verification, revoke
+  semantics, bearer auth, loopback CORS, security headers, uniform `422`/`429`
+  errors, per-client rate limits, TLS flags and certificate SANs
 
 Flutter client:
 
@@ -547,11 +588,13 @@ This is a strong portfolio/lab project, but it is **not** a finished commercial
 product. The honest gap list, roughly in value order:
 
 **Security & operations**
-- The Streamlit dashboard has no login; the API uses one shared token, not
+- The Streamlit dashboard has no login; the API uses shared tokens, not
   users/roles. Add OIDC or per-user API keys before exposing either publicly.
-- TLS is not terminated by CloudSentinel itself; put Caddy/nginx in front and
-  drop `usesCleartextTraffic` for production builds.
-- No rate limiting, audit log or key rotation on the API.
+- TLS is available natively for Windows/browsers, but the Android app cannot
+  trust a self-signed CA (Flutter ignores the user store); a publicly trusted
+  certificate or a VPN is still needed for phones on untrusted networks.
+- Rate limiting and token rotation are per-process and file-backed; a
+  multi-worker deployment needs a shared store and a real secret manager.
 
 **Detection coverage**
 - Four detectors only. High-value next rules: MFA disabled/deleted, root
@@ -585,8 +628,9 @@ product. The honest gap list, roughly in value order:
    both the dashboard and mobile app.
 2. **Streaming ingestion** — S3/SQS poller or EventBridge webhook so findings
    appear without manual scans.
-3. **Real auth + TLS** — OIDC for the console, per-user API keys, HTTPS
-   deployment recipe; this is the gate for any shared environment.
+3. **Per-user auth** — OIDC for the console and scoped API keys; TLS and token
+   rotation are already in place, identity is the remaining gate for a shared
+   environment.
 
 ---
 

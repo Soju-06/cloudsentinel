@@ -57,3 +57,8 @@ mobile/cloudsentinel_mobile/android/app/src/main/java/io/flutter/plugins/Generat
 .idea/
 .DS_Store
 Thumbs.db
+
+# TLS material and rotating API tokens are never committed
+certs/
+data/api_tokens.json
+data/api_tokens.json.tmp

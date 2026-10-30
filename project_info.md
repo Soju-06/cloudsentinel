@@ -23,7 +23,8 @@ automated tests and first-class AWS CloudTrail support.
 - Export security reports as CSV/JSON/HTML/PDF.
 - Notify Slack, generic webhooks and SMTP recipients.
 - Automated pytest suite, CloudTrail/CloudWatch adapters, gzip ingestion.
-- REST API (FastAPI) with token auth, filters and opt-in remote scanning.
+- REST API (FastAPI) with bearer/X-API-Token auth, rotating token store,
+  native HTTPS, rate limiting, filters and opt-in remote scanning.
 - Native Flutter Android console compiled to a release APK.
 - Portable Windows app: the same Flutter UI in a .NET/WebView2 shell.
 - Docker + docker-compose packaging for the console.
@@ -112,8 +113,13 @@ python -m cloudsentinel scan --notify     # scan + send notifications
 python -m cloudsentinel report -f html    # export alerts
 python -m cloudsentinel notify            # re-send stored alerts
 python -m cloudsentinel serve             # REST API for the Android app
+python -m cloudsentinel serve --host 0.0.0.0 --token SECRET \
+  --tls-cert certs/cloudsentinel-dev.pem --tls-key certs/cloudsentinel-dev-key.pem
+python -m cloudsentinel tokens add --label phone   # rotating token
+python -m cloudsentinel tokens list
+python -m cloudsentinel tokens revoke phone
 streamlit run cloudsentinel/dashboard.py  # console
-python -m pytest                          # 156 tests
+python -m pytest                          # 192 tests (1 skipped)
 python scripts/benchmark.py --events 100000
 ```
 
@@ -125,13 +131,14 @@ python scripts/benchmark.py --events 100000
 - Sidebar: filters, on-demand scan, demo loader, send-alerts action, status.
 
 ## Test suite
-156 pytest tests covering ingestion (JSON/JSONL/CSV/gzip/CloudTrail/
-CloudWatch Logs), duplicate IDs, corrupt records, timezone handling, detector
-boundaries and severity matrices, cross-IP correlation, impossible travel,
-SQLite merge/suppression behaviour, report shapes (including PDF magic bytes),
-notification transports, configuration, CLI round trips, REST API auth/filters/
-pagination/scan gating and end-to-end sample data. A genuine AWS CloudWatch
-Logs subscription fixture lives in `tests/fixtures/`.
+192 pytest tests (1 skipped on Windows) covering ingestion (JSON/JSONL/CSV/gzip/
+CloudTrail/CloudWatch Logs), duplicate IDs, corrupt records, timezone handling,
+detector boundaries and severity matrices, cross-IP correlation, impossible
+travel, SQLite merge/suppression behaviour, report shapes (including PDF magic
+bytes), notification transports, configuration, CLI round trips, REST API
+auth/filters/pagination/scan gating, API hardening (token rotation, rate limits,
+CORS, security headers, TLS flags, certificate SANs) and end-to-end sample data.
+A genuine AWS CloudWatch Logs subscription fixture lives in `tests/fixtures/`.
 
 The Flutter client adds 25 Dart tests (`flutter test`): URL normalisation,
 tolerant model parsing, token headers, 401/403 error paths, filter query
@@ -200,6 +207,33 @@ animation (one-shot play, replay on retry, reduced-motion fallback).
 - The Windows shell gained `--screenshot FILE` and `--screenshot-delay MS`, so
   either state can be captured off-screen even when another window covers it.
 
+## Secure API & network (Phase 16)
+- `cloudsentinel/tokens.py` — rotating token store at `data/api_tokens.json`:
+  256-bit `secrets.token_urlsafe` tokens, salted SHA-256 fingerprints only,
+  constant-time verification against every active token, atomic owner-only
+  writes. `add`, `list`, `revoke` (label, label prefix or fingerprint prefix).
+  Revoking the last token **locks** the API instead of opening it.
+- `cloudsentinel/ratelimit.py` — dependency-free sliding-window limiter keyed by
+  client IP plus a truncated token hash; bounded client map; `429` with
+  `Retry-After`. `/health` is exempt, `/api/scan` gets one tenth of the budget.
+- `api.py` accepts `X-API-Token` and `Authorization: Bearer`, combines the
+  bootstrap token with the store, adds security headers (`nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`), loopback-only CORS by
+  default, and uniform `422`/`500` JSON bodies that never echo internals.
+  `/health` now reports `auth_required`, `auth_mode` and both rate limits.
+- `cli.py` serve flags: `--tls-cert`/`--tls-key` (uvicorn-native TLS),
+  `--rate-limit`, `--token-file`; a startup banner states TLS/auth/rate posture
+  and warns on plain-HTTP or tokenless LAN binds. New `tokens` subcommand.
+- `scripts/make_dev_cert.py` — self-signed RSA-2048/SHA-256 certificate with SANs
+  for localhost, machine name, loopback and detected LAN IP; prints Windows and
+  Android trust steps. `cryptography` added to requirements.
+- `tests/test_security.py` — 36 tests; full suite 191 passed, 1 skipped.
+- Verified live: HTTPS 8443 with `curl --cacert` (health 200, missing token 401,
+  header and bearer 200, sixth request 429 + `retry-after: 60`), and the plain
+  HTTP banner/429 path on `0.0.0.0`.
+- Documentation: `SECURITY.md` (threat model, rotation runbook, TLS/Android
+  caveat, deployment checklist) plus refreshed `INSTALL.md` and `README.md`.
+
 ## Design decisions
 - Generic-first schema keeps the detectors vendor-neutral.
 - CloudTrail adapter maps `eventName`, `errorCode`, `sourceIPAddress`,
@@ -216,9 +250,13 @@ animation (one-shot play, replay on retry, reduced-motion fallback).
 - **LOW / INFO** — reserved for future rules.
 
 ## Known limitations
-- The Streamlit dashboard is unauthenticated; the API uses one shared token.
-  Neither is ready for exposure to the public internet without TLS and real
-  user accounts.
+- The Streamlit dashboard is unauthenticated; the API uses shared tokens, not
+  per-user accounts. Neither is ready for public internet exposure.
+- Native TLS works for Windows/browsers, but Flutter's HTTP stack ignores the
+  Android user CA store, so a self-signed certificate cannot secure the APK;
+  phones need a publicly trusted certificate or a VPN.
+- Token store and rate limiter are file-backed and per-process; multi-worker
+  deployments would need a shared store and secret manager.
 - CloudTrail ingestion is file/export based, not a live event stream.
 - Detections are batch-only; there is no streaming, baselining or threat intel.
 - Alerts have no triage workflow (acknowledge/assign/close).
@@ -242,17 +280,22 @@ animation (one-shot play, replay on retry, reduced-motion fallback).
 8. ✅ Windows desktop app + release packaging (Phase 14).
 9. ✅ Connection-recovery UX with start-command hint and golf animation
    (Phase 15).
-10. ⬜ Alert triage state, streaming ingestion, real auth + TLS.
-11. ⬜ Additional detections (MFA/root/key/security-group/CloudTrail tampering).
+10. ✅ Secure API & network: rotation, TLS, rate limits, CORS, security docs
+    (Phase 16).
+11. ⬜ Alert triage state, streaming ingestion, per-user auth.
+12. ⬜ Additional detections (MFA/root/key/security-group/CloudTrail tampering).
 
 ## Project status
-Phases 0–15 complete and verified:
-- 156/156 Python tests passing; 25/25 Flutter tests passing; `flutter analyze`
-  reports no issues.
+Phases 0–16 complete and verified:
+- 191 Python tests passing (1 skipped on Windows); 25/25 Flutter tests passing;
+  `flutter analyze` reports no issues.
 - Demo dataset: 210 events → 10 alerts (5 critical, 5 high), all four engines.
 - Dashboard headless run: 0 exceptions, 3 tabs, 3 actions, 4 export formats.
 - API verified live: `/health` returns version 0.3.0 and 10 alerts, tokenless
   `/api/summary` is rejected with 401, token requests return the summary.
+- Security verified live: HTTPS on 8443 with a generated certificate (health
+  200, no token 401, `X-API-Token` 200, bearer 200, 6th request 429 with
+  `retry-after: 60`); plain-HTTP LAN banner warns about unencrypted tokens.
 - Android release APK rebuilt from final source and copied to
   `dist/CloudSentinel-1.0.0.apk` (49.8 MB, debug signing; sideload).
   SHA-256 `9AC7D8128AD48974DB289A01F408AD067562A1E12D2F82E8ABD4FCD2EE08F24D`.

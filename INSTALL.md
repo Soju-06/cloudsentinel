@@ -41,6 +41,20 @@ python -m cloudsentinel serve
 
 # custom port + remote scan button in the apps
 python -m cloudsentinel serve --port 8081 --token CHANGE_ME --allow-scan
+
+# HTTPS for the LAN (see section 6)
+python scripts/make_dev_cert.py --out certs
+python -m cloudsentinel serve --host 0.0.0.0 --port 8443 --token CHANGE_ME `
+  --tls-cert certs\cloudsentinel-dev.pem --tls-key certs\cloudsentinel-dev-key.pem
+```
+
+Rotating tokens (add a new one, switch clients, then revoke the old one — no
+restart needed):
+
+```powershell
+python -m cloudsentinel tokens add --label phone
+python -m cloudsentinel tokens list
+python -m cloudsentinel tokens revoke phone
 ```
 
 > **Firewall:** the first time you bind `0.0.0.0`, Windows asks whether to allow
@@ -48,7 +62,8 @@ python -m cloudsentinel serve --port 8081 --token CHANGE_ME --allow-scan
 > cannot connect.
 
 Environment variables work too: `CLOUDSENTINEL_API_TOKEN`,
-`CLOUDSENTINEL_API_ALLOW_SCAN=true`.
+`CLOUDSENTINEL_API_ALLOW_SCAN=true`, `CLOUDSENTINEL_RATE_LIMIT`, and
+`CLOUDSENTINEL_TOKEN_FILE`.
 
 ---
 
@@ -241,13 +256,70 @@ streamlit run cloudsentinel\dashboard.py
 
 ## 6. Security notes (read before exposing anything)
 
-- The token is a **shared secret**, not a user account system. Anyone with it
-  has full read access to alerts and evidence.
-- Traffic is plain HTTP. That is fine on a trusted lab LAN; for anything else,
-  put Caddy/nginx with TLS in front of the API and use an `https://` URL.
-- `POST /api/scan` is disabled unless you pass `--allow-scan`. Keep it off on
-  untrusted networks.
-- Never port-forward 8080 from the internet. Use a VPN or an authenticated
-  reverse proxy.
-- Rotate the token by restarting the server with a new `--token` and re-entering
-  it in each app.
+The short version: **localhost by default, tokens always, TLS before the LAN,
+never the public internet.** Full threat model and rationale: `SECURITY.md`.
+
+### What the server does by default
+
+| Control | Default |
+|---|---|
+| Bind address | `127.0.0.1` — loops back to this machine only |
+| Authentication | required as soon as a token exists; open only when none is configured |
+| Rate limit | 120 requests/minute per client+token (scans: 1/10th of that) |
+| Browser origins | loopback only (`http://127.0.0.1:…`, `http://localhost:…`) |
+| Scan endpoint | disabled (`403`) unless `--allow-scan` |
+| Error responses | uniform JSON, no tokens, paths or stack traces |
+
+### HTTPS on your network (recommended for `--host 0.0.0.0`)
+
+```powershell
+# 1. Create a development certificate (localhost, 127.0.0.1 and your LAN IP)
+python scripts\make_dev_cert.py --out certs
+
+# 2. Trust it on this PC (current user store, no admin rights)
+certutil -user -addstore Root certs\cloudsentinel-dev.pem
+
+# 3. Serve HTTPS
+python -m cloudsentinel serve --host 0.0.0.0 --port 8443 --token CHANGE_ME `
+  --tls-cert certs\cloudsentinel-dev.pem --tls-key certs\cloudsentinel-dev-key.pem
+```
+
+- The Windows app and browsers use the Windows certificate store, so step 2 is
+  enough for them.
+- **Android:** because the certificate is self-signed you can install it under
+  *Settings → Security → Encryption & credentials → Install a certificate → CA
+  certificate*, which makes browsers trust it. Flutter's HTTP stack does **not**
+  read the Android user CA store, so for the phone app over HTTPS use a
+  publicly trusted certificate (e.g. Caddy/nginx with Let's Encrypt) — or keep
+  HTTP on a trusted home Wi-Fi, which is what the LAN default assumes.
+- Never commit `certs/` or the private key; both are gitignored.
+
+### Tokens and rotation
+
+- `--token` is the bootstrap token: fine for a quick start, but one value for
+  every client.
+- `python -m cloudsentinel tokens add --label phone` creates a 256-bit token,
+  shown **once** and stored only as a salted SHA-256 fingerprint in
+  `data/api_tokens.json` (gitignored, owner-only permissions on POSIX).
+- `tokens list` shows labels and 8-character fingerprints — never the secret.
+- `tokens revoke <label>` takes effect on the next request, with no restart:
+  add the replacement, update the client, revoke the old one.
+- Revoking the last token **locks** the API (it does not silently open it).
+- The stack is a shared secret, not a user account system: anyone holding a
+  valid token has full read access to alerts and evidence.
+
+### Rate limiting
+
+The API returns `429` with a `Retry-After` header when a client exceeds its
+budget. Tune it with `--rate-limit N` (requests per minute, `0` disables) or
+`CLOUDSENTINEL_RATE_LIMIT`. `/health` is always exempt so monitoring stays up.
+The limiter is per process — correct for this single-process deployment.
+
+### What not to do
+
+- Never port-forward the API from the internet. Use a VPN or an authenticated
+  reverse proxy with TLS.
+- Keep `--allow-scan` off on untrusted networks; it runs a scan on request.
+- Don't put the bootstrap token in a shortcut on a shared computer — use
+  `tokens add` and a client that stores it privately.
+

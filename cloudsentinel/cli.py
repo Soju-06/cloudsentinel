@@ -103,7 +103,28 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--token",
         default=None,
-        help="shared API token (defaults to CLOUDSENTINEL_API_TOKEN)",
+        help="bootstrap API token (defaults to CLOUDSENTINEL_API_TOKEN)",
+    )
+    serve.add_argument(
+        "--token-file",
+        default=None,
+        help="rotating token store (default: data/api_tokens.json when it exists)",
+    )
+    serve.add_argument(
+        "--tls-cert",
+        default=None,
+        help="PEM certificate chain; enables HTTPS (needs --tls-key)",
+    )
+    serve.add_argument(
+        "--tls-key",
+        default=None,
+        help="PEM private key for --tls-cert",
+    )
+    serve.add_argument(
+        "--rate-limit",
+        type=int,
+        default=None,
+        help="API requests per minute per client (0 disables; default 120)",
     )
     serve.add_argument(
         "--allow-scan",
@@ -113,8 +134,29 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--cors",
         default=None,
-        help="comma-separated allowed origins for browser clients (default: *)",
+        help=(
+            "comma-separated browser origins; default allows loopback only, "
+            "use '*' to allow every origin"
+        ),
     )
+
+    tokens = subparsers.add_parser(
+        "tokens", help="manage rotating API tokens (add, list, revoke)"
+    )
+    token_actions = tokens.add_subparsers(dest="token_action", required=True)
+
+    token_add = token_actions.add_parser("add", help="create a token")
+    token_add.add_argument("--label", default=None, help="human label, e.g. phone")
+    token_add.add_argument("--token-file", default=None, help="token store path")
+
+    token_list = token_actions.add_parser("list", help="show stored tokens")
+    token_list.add_argument("--token-file", default=None, help="token store path")
+
+    token_revoke = token_actions.add_parser(
+        "revoke", help="revoke a token by label or fingerprint prefix"
+    )
+    token_revoke.add_argument("label", help="exact label, label prefix or digest prefix")
+    token_revoke.add_argument("--token-file", default=None, help="token store path")
 
     return parser
 
@@ -138,6 +180,8 @@ def main(argv: list[str] | None = None) -> int:
         return _notify(args)
     if args.command == "serve":
         return _serve(args)
+    if args.command == "tokens":
+        return _tokens(args)
     return 1
 
 
@@ -240,10 +284,71 @@ def _print_notifications(results) -> None:
         return
     for result in results:
         status = "sent" if result.sent else "failed"
-        print(f"  notification   : {result.channel} {status} — {result.detail}")
+        print(f"  notification   : {result.channel} {status} - {result.detail}")
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _security_banner(
+    host: str,
+    *,
+    tls: bool,
+    bootstrap_token: bool,
+    token_store=None,
+    rate_limit: int | None,
+) -> list[str]:
+    """Human-readable security summary printed before the server starts."""
+    active_tokens = token_store.active_count() if token_store is not None else 0
+
+    if bootstrap_token and active_tokens:
+        auth = f"bootstrap token + {active_tokens} rotating token(s)"
+    elif active_tokens:
+        auth = f"{active_tokens} rotating token(s)"
+    elif bootstrap_token:
+        auth = "single shared token (bootstrap)"
+    elif token_store is not None:
+        auth = "LOCKED - token store has no active tokens (use `tokens add`)"
+    else:
+        auth = "OPEN - no token configured"
+
+    limit = rate_limit if rate_limit is not None else 120
+    lines = [
+        f"TLS            : {'on' if tls else 'off - plain HTTP'}",
+        f"Authentication : {auth}",
+        f"Rate limit     : {'off' if limit == 0 else f'{limit} req/min per client'}",
+    ]
+
+    if host not in _LOOPBACK_HOSTS:
+        if not tls:
+            lines.append(
+                "WARNING: --host binds the API to your network. Without --tls-cert/"
+                "--tls-key the token travels in plain text and can be captured by "
+                "anyone on the same Wi-Fi."
+            )
+        if not bootstrap_token and not active_tokens and token_store is None:
+            lines.append(
+                "WARNING: the API is reachable on your network without a token. "
+                "Add --token or create one with `python -m cloudsentinel tokens add`."
+            )
+    return lines
 
 
 def _serve(args: argparse.Namespace) -> int:
+    tls_cert = getattr(args, "tls_cert", None)
+    tls_key = getattr(args, "tls_key", None)
+
+    if args.rate_limit is not None and args.rate_limit < 0:
+        print("error: --rate-limit must be 0 (disabled) or a positive number")
+        return 2
+    if bool(tls_cert) != bool(tls_key):
+        print("error: --tls-cert and --tls-key must be given together")
+        return 2
+    for path, flag in ((tls_cert, "--tls-cert"), (tls_key, "--tls-key")):
+        if path and not Path(path).is_file():
+            print(f"error: {flag} file not found: {path}")
+            return 2
+
     try:
         import uvicorn
     except ImportError:
@@ -252,6 +357,7 @@ def _serve(args: argparse.Namespace) -> int:
         return 1
 
     from .api import create_app
+    from .tokens import DEFAULT_TOKEN_PATH, TokenError, TokenStore
 
     config = Config.load(args.config)
     token = (
@@ -259,8 +365,20 @@ def _serve(args: argparse.Namespace) -> int:
         if args.token is not None
         else os.environ.get("CLOUDSENTINEL_API_TOKEN", "")
     )
-    origins = tuple(
-        item.strip() for item in (args.cors or "*").split(",") if item.strip()
+
+    token_store = None
+    token_file = Path(args.token_file) if args.token_file else DEFAULT_TOKEN_PATH
+    if Path(token_file).exists() or args.token_file:
+        try:
+            token_store = TokenStore(token_file)
+        except TokenError as exc:
+            print(f"error: {exc}")
+            return 2
+
+    origins = (
+        None
+        if args.cors is None
+        else tuple(item.strip() for item in args.cors.split(",") if item.strip())
     )
     application = create_app(
         db_path=args.db,
@@ -269,24 +387,97 @@ def _serve(args: argparse.Namespace) -> int:
         token=token,
         allow_scan=args.allow_scan,
         cors_origins=origins,
+        token_store=token_store,
+        rate_limit=args.rate_limit,
     )
 
     host = args.host
-    print(f"CloudSentinel API  -> http://{host}:{args.port}/docs")
-    if host not in {"127.0.0.1", "localhost", "::1"}:
-        if not token:
-            print(
-                "WARNING: the API is reachable on your network without a token. "
-                "Use --token or CLOUDSENTINEL_API_TOKEN."
-            )
+    scheme = "https" if tls_cert else "http"
+    print(f"CloudSentinel API  -> {scheme}://{host}:{args.port}/docs")
+    for line in _security_banner(
+        host,
+        tls=bool(tls_cert),
+        bootstrap_token=bool(token),
+        token_store=token_store,
+        rate_limit=args.rate_limit,
+    ):
+        print(f"  {line}")
+
+    if host not in _LOOPBACK_HOSTS:
         try:
             lan_ip = socket.gethostbyname(socket.gethostname())
-            print(f"Phone server URL   -> http://{lan_ip}:{args.port}")
+            print(f"Phone server URL   -> {scheme}://{lan_ip}:{args.port}")
         except OSError:
             pass
+        if tls_cert:
+            print(
+                "  Tip: install the certificate as trusted on each device, "
+                "or the client will reject the HTTPS connection."
+            )
+
     print("Press Ctrl+C to stop.")
-    uvicorn.run(application, host=host, port=args.port, log_level="info")
+    uvicorn.run(
+        application,
+        host=host,
+        port=args.port,
+        log_level="info",
+        ssl_certfile=tls_cert,
+        ssl_keyfile=tls_key,
+    )
     return 0
+
+
+def _tokens(args: argparse.Namespace) -> int:
+    from .tokens import TokenError, TokenStore
+
+    try:
+        store = TokenStore(args.token_file)
+    except TokenError as exc:
+        print(f"error: {exc}")
+        return 2
+
+    if args.token_action == "add":
+        try:
+            plaintext, record = store.add(label=args.label)
+        except TokenError as exc:
+            print(f"error: {exc}")
+            return 2
+        print("New API token - shown once, store it now:")
+        print(f"  {plaintext}")
+        print(f"  label      : {record.label}")
+        print(f"  fingerprint: {record.digest[:8]}")
+        print(f"  store      : {store.path}")
+        print()
+        print("Clients send it as X-API-Token (or Authorization: Bearer <token>).")
+        print("Revoke later with: python -m cloudsentinel tokens revoke <label>")
+        return 0
+
+    if args.token_action == "list":
+        items = store.listing()
+        if not items:
+            print("No tokens stored.")
+            return 0
+        state_width = 8
+        print(f"{'LABEL':<18} {'FINGERPRINT':<12} {'CREATED':<22} STATE")
+        for item in items:
+            state = "active" if item["active"] else "revoked"
+            print(
+                f"{item['label']:<18} {item['fingerprint']:<12} "
+                f"{item['created']:<22} {state:<{state_width}}"
+            )
+        print(f"\nStore: {store.path}")
+        return 0
+
+    if args.token_action == "revoke":
+        revoked = store.revoke(args.label)
+        if revoked:
+            print(f"Revoked {revoked} token(s) matching '{args.label}'.")
+            print("Active connections continue until their next request.")
+            return 0
+        print(f"No active token matched '{args.label}'.")
+        return 1
+
+    return 2
 
 
 def _init(args: argparse.Namespace) -> int:
