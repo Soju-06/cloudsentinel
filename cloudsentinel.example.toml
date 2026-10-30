@@ -31,6 +31,28 @@ backend = "event"             # event | maxmind | http
 # maxmind_db_path = "C:/GeoLite2-City.mmdb"
 # http_timeout_seconds = 2.0
 
+[mfa]
+enabled = true
+
+[root_usage]
+enabled = true
+# Root actions that escalate from HIGH to CRITICAL.
+critical_actions = [
+  "createaccesskey", "createuser", "attachuserpolicy", "stoplogging",
+  "deletetrail", "putbucketpolicy", "deleteaccountpasswordpolicy",
+]
+
+[access_keys]
+enabled = true
+
+[security_groups]
+enabled = true
+# Public ingress on these ports is CRITICAL; other open ports are HIGH.
+sensitive_ports = [22, 23, 1433, 1521, 3306, 3389, 5432, 5900, 6379, 9200, 9300, 11211, 27017]
+
+[cloudtrail]
+enabled = true
+
 [notifications]
 enabled = false
 min_severity = "high"

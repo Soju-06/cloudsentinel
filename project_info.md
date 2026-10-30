@@ -3,7 +3,7 @@
 ## Overview
 CloudSentinel is a Python cloud-security monitoring and threat-detection lab.
 It ingests cloud audit logs, normalises them into a vendor-neutral schema, runs
-four detection engines, persists de-duplicated alerts in SQLite, supports
+nine detection engines, persists de-duplicated alerts in SQLite, supports
 acknowledge/assign/close triage, and presents them in a futuristic Streamlit
 console with CSV/JSON/HTML/PDF reporting and Slack/webhook/email notifications. A FastAPI service exposes the same alert
 store to native Flutter clients: a sideloadable Android APK and a portable
@@ -19,6 +19,9 @@ automated tests and first-class AWS CloudTrail support.
 - Detect impossible travel between consecutive successful logins.
 - Flag potentially public cloud storage (bucket policies and canned ACLs).
 - Detect potentially excessive IAM permissions (wildcards, admin policies).
+- Detect MFA removal, root-account use and long-lived access-key creation.
+- Flag security groups with ingress open to `0.0.0.0/0` or `::/0`.
+- Detect CloudTrail logging stopped, deleted or re-scoped.
 - Display alerts with severity levels in a Streamlit dashboard.
 - Triage alerts (acknowledge, assign, close, reopen) from the dashboard, CLI,
   REST API and mobile client; state survives rescans.
@@ -53,7 +56,8 @@ data/raw/*.json|jsonl|csv|gz
               duplicate-ID suppression)
         │  canonical event DataFrame
         ▼
- detectors/ (brute_force · impossible_travel · public_storage · iam_permissions)
+ detectors/ (brute force · travel · storage · IAM · MFA · root · access keys ·
+             security groups · CloudTrail tampering)
         │  Alert objects
         ▼
    db.py (SQLite: fingerprint upsert, suppression merge)
@@ -123,7 +127,7 @@ python -m cloudsentinel tokens revoke phone
 python -m cloudsentinel triage 12 --status acknowledged --assignee analyst@example.com
 python -m cloudsentinel triage 12 --status closed
 streamlit run cloudsentinel/dashboard.py  # console
-python -m pytest                          # 214 tests (1 skipped)
+python -m pytest                          # 254 tests (1 skipped)
 python scripts/benchmark.py --events 100000
 ```
 
@@ -137,11 +141,12 @@ python scripts/benchmark.py --events 100000
   send-alerts action, open-alert count.
 
 ## Test suite
-214 pytest tests (1 skipped on Windows) covering ingestion (JSON/JSONL/CSV/gzip/
+254 pytest tests (1 skipped on Windows) covering ingestion (JSON/JSONL/CSV/gzip/
 CloudTrail/CloudWatch Logs), duplicate IDs, corrupt records, timezone handling,
 detector boundaries and severity matrices, cross-IP correlation, impossible
-travel, SQLite merge/suppression behaviour, report shapes (including PDF magic
-bytes), notification transports, configuration, CLI round trips, REST API
+travel, MFA/root/access-key/security-group/CloudTrail-tampering rules, SQLite
+merge/suppression behaviour, report shapes (including PDF magic bytes),
+notification transports, configuration, CLI round trips, REST API
 auth/filters/pagination/scan gating, API hardening (token rotation, rate limits,
 CORS, security headers, TLS flags, certificate SANs), triage transitions,
 in-place database migration, rescan persistence, triage API/status filters and
@@ -267,6 +272,32 @@ reduced-motion fallback). `flutter analyze` reports no issues.
 - Tests: `tests/test_triage.py` (workflow, migration, persistence, API) plus
   Dart coverage for PATCH bodies, clearing and 409 handling.
 
+## Additional detections (Phase 18)
+- `detectors/_cloud.py` — shared control-plane helpers that accept both
+  CloudTrail (`requestParameters`, `userIdentity`) and generic snake_case keys,
+  plus the `{"items": [...]}` list shape.
+- `mfa_changes` — `DeactivateMFADevice` / `DeleteVirtualMFADevice`: own device
+  HIGH, another principal or root CRITICAL.
+- `root_usage` — any root action HIGH; configurable security-sensitive actions
+  (IAM, keys, trails, bucket policies, password policy) CRITICAL. Root is
+  detected from `userIdentity.type`, an ARN ending in `:root` or user `root`.
+- `access_key_creation` — `CreateAccessKey`: self MEDIUM, another user HIGH,
+  root CRITICAL; the new key id is captured when present.
+- `security_group_open` — public ingress (`0.0.0.0/0`, `::/0`): SSH/RDP/
+  database/administrative ports or all-port rules CRITICAL, other ports HIGH.
+  Parses CloudTrail SDK list shapes and flat generic parameters.
+- `cloudtrail_tampering` — `StopLogging`/`DeleteTrail`/`DeleteEventDataStore`
+  CRITICAL; `UpdateTrail`/`PutEventSelectors`/`PutInsightSelectors`/
+  `UpdateEventDataStore` HIGH, grouped per trail.
+- New config sections `[mfa]`, `[root_usage]`, `[access_keys]`,
+  `[security_groups]` (custom `sensitive_ports`), `[cloudtrail]`.
+- Detector metadata, dashboard filter chips/labels and mobile labels updated;
+  sample data now yields 20 alerts across all nine engines.
+- Tests: one file per detector (`tests/test_mfa_changes.py`,
+  `test_root_usage.py`, `test_access_keys.py`, `test_security_groups.py`,
+  `test_cloudtrail_tampering.py`) plus configuration, API metadata and
+  end-to-end sample-data coverage.
+
 ## Design decisions
 - Generic-first schema keeps the detectors vendor-neutral.
 - CloudTrail adapter maps `eventName`, `errorCode`, `sourceIPAddress`,
@@ -277,9 +308,9 @@ reduced-motion fallback). `flutter analyze` reports no issues.
   full analysis remains the source of truth.
 
 ## Severity levels
-- **CRITICAL** — immediate response (public read/write bucket, full wildcard IAM, impossible travel, likely compromise).
-- **HIGH** — triage within 24h (public-read bucket, failed-login burst, admin policy, slow impossible travel).
-- **MEDIUM** — review (authenticated-read ACL, wildcard resource only).
+- **CRITICAL** — immediate response (public read/write bucket, full wildcard IAM, impossible travel, likely compromise, MFA removal for another user, sensitive root action, root key creation, open SSH/RDP/all-port rule, CloudTrail logging stopped).
+- **HIGH** — triage within 24h (public-read bucket, failed-login burst, admin policy, slow impossible travel, own MFA removal, routine root use, key created for another user, other open ports, trail reconfiguration).
+- **MEDIUM** — review (authenticated-read ACL, wildcard resource only, self-created access key).
 - **LOW / INFO** — reserved for future rules.
 
 ## Known limitations
@@ -292,6 +323,8 @@ reduced-motion fallback). `flutter analyze` reports no issues.
   deployments would need a shared store and secret manager.
 - CloudTrail ingestion is file/export based, not a live event stream.
 - Detections are batch-only; there is no streaming, baselining or threat intel.
+- KMS key deletion, guardrail/SCP changes and VPC flow-log gaps are not yet
+  covered; the detection set is event-name/parameter driven, not inventory-based.
 - Triage is intentionally minimal: status + assignee, with no comments, SLA
   timers, bulk actions or immutable audit trail.
 - The Docker image was not built in this environment (no Docker CLI).
@@ -318,33 +351,39 @@ reduced-motion fallback). `flutter analyze` reports no issues.
     (Phase 16).
 11. ✅ Alert triage state: acknowledge/assign/close/reopen across the dashboard,
     API, CLI and mobile client (Phase 17).
-12. ⬜ Streaming ingestion, per-user auth and additional detections
-    (MFA/root/key/security-group/CloudTrail tampering).
+12. ✅ Additional detections: MFA removal, root usage, access-key creation,
+    open security groups and CloudTrail tampering (Phase 18).
+13. ⬜ Streaming / near-real-time ingestion (S3/SQS poller or EventBridge
+    webhook plus a watch mode).
+14. ⬜ Per-user auth: OIDC for the console and scoped API identities.
 
 ## Project status
-Phases 0–17 complete and verified:
-- 213 Python tests passing (1 skipped on Windows); 29/29 Flutter tests passing
+Phases 0–18 complete and verified:
+- 253 Python tests passing (1 skipped on Windows); 29/29 Flutter tests passing
   and `flutter analyze` reports no issues (Flutter 3.47 / Dart 3.13).
 - Triage verified by tests: workflow transitions, in-place migration of a
   legacy database, persistence across rescans, PATCH auth/400/409/404 paths and
   status-filtered queries and exports.
-- Demo dataset: 210 events → 10 alerts (5 critical, 5 high), all four engines.
+- New detectors verified with per-rule severity boundaries, both CloudTrail and
+  flat parameter shapes, grouping, config toggles and end-to-end sample data.
+- Demo dataset: 220 events → 20 alerts (13 critical, 7 high), all nine engines.
 - Dashboard headless run: 0 exceptions, 3 tabs, 3 actions, 4 export formats.
-- API verified live: `/health` reports version 0.4.0 and the alert count,
+- API verified live: `/health` reports version 0.5.0 and the alert count,
   tokenless `/api/summary` is rejected with 401, token requests return the
   summary, and `PATCH /api/alerts/{id}` drives triage (covered by tests).
 - Security verified live: HTTPS on 8443 with a generated certificate (health
   200, no token 401, `X-API-Token` 200, bearer 200, 6th request 429 with
   `retry-after: 60`); plain-HTTP LAN banner warns about unencrypted tokens.
-- Android release APK rebuilt from Phase 17 source (with the triage UI) and
-  copied to `dist/CloudSentinel-1.0.0.apk` (49.9 MB, debug signing; sideload).
-  SHA-256 `B2BD02981242A53DC5F8EF55201FD09F10D9A3249C6E7ED1C2F14B5E197ED603`.
-- Windows app rebuilt from Phase 17 source at `app/` (20.7 MB total, including
+- Android release APK rebuilt from Phase 18 source (triage UI + nine detector
+  labels) and copied to `dist/CloudSentinel-1.0.0.apk` (49.9 MB, debug signing;
+  sideload). SHA-256
+  `6A5AEC76ABA2A4E54443E25887DC9020D80788C05C9246A24FF8D916E6D10C51`.
+- Windows app rebuilt from Phase 18 source at `app/` (20.7 MB total, including
   the Flutter web bundle) and verified live against the API; viewport/DPI probe
   matches the window at 125 % scaling.
 - Connection-recovery screen verified by off-screen render in both states:
   server offline (error screen with command, golf scene at rest) and server
   online (dashboard).
-- Benchmark: ~5.6 s median for 100k events (~18k events/s end-to-end) on a
-  quiet machine; slower when antivirus is active.
+- Benchmark: ~2.6 s median for 100k events (~38k events/s end-to-end) across
+  nine detectors on a quiet machine; slower when antivirus is active.
 - Docker CLI unavailable on the development machine, so image build untested.

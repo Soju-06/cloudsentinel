@@ -53,6 +53,46 @@ DEFAULT_ADMIN_POLICY_HINTS = [
     "poweruseraccess",
 ]
 
+# Ports whose exposure to the internet is treated as CRITICAL.
+DEFAULT_SENSITIVE_PORTS = [
+    22,
+    23,
+    1433,
+    1521,
+    3306,
+    3389,
+    5432,
+    5900,
+    6379,
+    9200,
+    9300,
+    11211,
+    27017,
+]
+
+# Root actions that change security posture escalate to CRITICAL.
+DEFAULT_ROOT_CRITICAL_ACTIONS = [
+    "createaccesskey",
+    "createuser",
+    "createrole",
+    "createpolicy",
+    "attachuserpolicy",
+    "attachrolepolicy",
+    "attachgrouppolicy",
+    "putuserpolicy",
+    "putrolepolicy",
+    "putgrouppolicy",
+    "deactivatemfadevice",
+    "deletevirtualmfadevice",
+    "deleteaccountpasswordpolicy",
+    "updateaccountpasswordpolicy",
+    "stoplogging",
+    "deletetrail",
+    "updatetrail",
+    "putbucketpolicy",
+    "putbucketacl",
+]
+
 
 @dataclass
 class BruteForceConfig:
@@ -99,6 +139,45 @@ class IAMConfig:
         default_factory=lambda: list(DEFAULT_ADMIN_POLICY_HINTS)
     )
     scan_inline_policies: bool = True
+
+
+@dataclass
+class MFAConfig:
+    enabled: bool = True
+
+
+@dataclass
+class RootUsageConfig:
+    enabled: bool = True
+    critical_actions: list[str] = field(
+        default_factory=lambda: list(DEFAULT_ROOT_CRITICAL_ACTIONS)
+    )
+
+
+@dataclass
+class AccessKeyConfig:
+    enabled: bool = True
+
+
+@dataclass
+class SecurityGroupConfig:
+    enabled: bool = True
+    sensitive_ports: list[int] = field(
+        default_factory=lambda: list(DEFAULT_SENSITIVE_PORTS)
+    )
+
+    def __post_init__(self) -> None:
+        self.sensitive_ports = [int(port) for port in self.sensitive_ports]
+        for port in self.sensitive_ports:
+            if not 0 <= port <= 65535:
+                raise ValueError(
+                    f"security_groups.sensitive_ports must be 0-65535, got {port}"
+                )
+
+
+@dataclass
+class CloudTrailConfig:
+    enabled: bool = True
 
 
 @dataclass
@@ -168,6 +247,11 @@ class Config:
     impossible_travel: ImpossibleTravelConfig = field(
         default_factory=ImpossibleTravelConfig
     )
+    mfa: MFAConfig = field(default_factory=MFAConfig)
+    root_usage: RootUsageConfig = field(default_factory=RootUsageConfig)
+    access_keys: AccessKeyConfig = field(default_factory=AccessKeyConfig)
+    security_groups: SecurityGroupConfig = field(default_factory=SecurityGroupConfig)
+    cloudtrail: CloudTrailConfig = field(default_factory=CloudTrailConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     suppression_minutes: int = 60
 
@@ -194,6 +278,11 @@ class Config:
             impossible_travel=_build(
                 ImpossibleTravelConfig, data.get("impossible_travel")
             ),
+            mfa=_build(MFAConfig, data.get("mfa")),
+            root_usage=_build(RootUsageConfig, data.get("root_usage")),
+            access_keys=_build(AccessKeyConfig, data.get("access_keys")),
+            security_groups=_build(SecurityGroupConfig, data.get("security_groups")),
+            cloudtrail=_build(CloudTrailConfig, data.get("cloudtrail")),
             notifications=_build(NotificationConfig, data.get("notifications")),
             suppression_minutes=int(data.get("suppression_minutes", 60)),
         )

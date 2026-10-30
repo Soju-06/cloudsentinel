@@ -48,12 +48,22 @@ DETECTORS = [
     "impossible_travel",
     "public_storage",
     "iam_permissions",
+    "mfa_changes",
+    "root_usage",
+    "access_key_creation",
+    "security_group_open",
+    "cloudtrail_tampering",
 ]
 DETECTOR_LABELS = {
     "brute_force": "BRUTE FORCE",
     "impossible_travel": "IMPOSSIBLE TRAVEL",
     "public_storage": "PUBLIC STORAGE",
     "iam_permissions": "IAM PERMISSIONS",
+    "mfa_changes": "MFA CHANGES",
+    "root_usage": "ROOT USAGE",
+    "access_key_creation": "ACCESS KEYS",
+    "security_group_open": "OPEN SECURITY GROUP",
+    "cloudtrail_tampering": "CLOUDTRAIL TAMPERING",
 }
 WINDOWS = {
     "Last 24 hours": timedelta(hours=24),

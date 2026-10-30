@@ -136,6 +136,11 @@ def test_detector_metadata(client):
         "impossible_travel",
         "public_storage",
         "iam_permissions",
+        "mfa_changes",
+        "root_usage",
+        "access_key_creation",
+        "security_group_open",
+        "cloudtrail_tampering",
     }
     assert "critical" in payload["severities"]
 

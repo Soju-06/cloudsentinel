@@ -2,13 +2,13 @@
 
 **Cloud Security Monitoring & Threat Detection Lab**
 
-Ingest cloud audit logs, detect suspicious activity with four purpose-built
+Ingest cloud audit logs, detect suspicious activity with nine purpose-built
 detectors, and investigate findings in a futuristic Streamlit security console
 or the native Android and Windows apps.
 
 ```
 raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts ──► Streamlit console
-(JSON/JSONL/CSV/gz)  (Pandas)      (4 engines)   (deduplicated)     + CSV/JSON/HTML/PDF
+(JSON/JSONL/CSV/gz)  (Pandas)      (9 engines)   (deduplicated)     + CSV/JSON/HTML/PDF
                                                                    + Slack/webhook/email
                                                                    + REST API ──► Android APK
                                                                                 └► Windows app
@@ -28,6 +28,12 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 - **Excessive IAM permissions** — detects wildcard actions/resources and
   administrative managed-policy attachments, including CloudTrail's
   URL-encoded policy documents.
+- **Identity attacks** — MFA devices disabled/deleted, root-account activity and
+  new long-lived IAM access keys, with severity based on who acted on whom.
+- **Network exposure** — ingress rules open to `0.0.0.0/0` or `::/0`, escalated
+  for SSH/RDP/database ports and all-port rules.
+- **Audit tampering** — CloudTrail logging stopped, deleted or re-scoped, both
+  in S3-dump and CLI/SDK parameter shapes.
 - **Hybrid storage** — raw events stay in files (`data/raw/`); only alerts are
   persisted in SQLite for history, filtering and de-duplication.
 - **Alert triage** — acknowledge, assign, close and reopen alerts from the
@@ -58,7 +64,7 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 - **Futuristic console** — dark glassmorphism theme, neon severity badges,
   Plotly charts, top-risk entities and one-click exports.
 - **Docker** — `Dockerfile` + `docker-compose.yml` for a reproducible console.
-- **214 automated Python tests** (213 pass, 1 skipped on Windows) plus
+- **254 automated Python tests** (253 pass, 1 skipped on Windows) plus
   **29 Flutter tests** covering ingestion, every detector, storage, reporting,
   notifications, configuration, CLI, API auth/rotation/rate limits/TLS,
   triage and status transitions, hardening scenarios, the Dart API client and
@@ -81,9 +87,10 @@ streamlit run cloudsentinel/dashboard.py
 
 Open http://localhost:8501.
 
-The demo dataset contains **210 events** across two sources (generic JSON + a
-CloudTrail dump) and produces **10 alerts — 5 critical, 5 high** — covering all
-four detectors, including an Ashburn → Moscow impossible-travel login.
+The demo dataset contains **220 events** across two sources (generic JSON + a
+CloudTrail dump) and produces **20 alerts — 13 critical, 7 high** — covering all
+nine detectors, including an Ashburn → Moscow impossible-travel login, an open
+SSH rule, a deleted MFA device and CloudTrail logging being stopped.
 
 ### Docker (optional)
 
@@ -195,6 +202,44 @@ evidence records both endpoints, distance, elapsed time and implied speed.
 
 Only IAM-related events are evaluated, so an S3 bucket policy that uses
 `Principal: "*"` is not misreported as an IAM over-grant.
+
+### 5. MFA removal — `mfa_changes`
+
+- `DeactivateMFADevice` / `DeleteVirtualMFADevice` on your own account → **HIGH**
+- Removing another principal's device, or any change involving root → **CRITICAL**
+
+### 6. Root account use — `root_usage`
+
+- Any action performed as the root user → **HIGH**
+- Security-sensitive root actions (IAM, access keys, trails, bucket policies,
+  password policy, MFA) → **CRITICAL**
+
+Root is detected from `userIdentity.type == "Root"`, an ARN ending in `:root`,
+or the literal user name `root`, so it works for CloudTrail and generic logs.
+
+### 7. Access-key creation — `access_key_creation`
+
+- Creating a key for yourself → **MEDIUM**
+- Creating a key for another user → **HIGH**
+- Root creating any key → **CRITICAL**
+
+The new `accessKeyId` is captured in evidence when the log provides it.
+
+### 8. Internet-exposed security group — `security_group_open`
+
+- Public ingress (`0.0.0.0/0` or `::/0`) on SSH, RDP, SQL, Redis, MongoDB or
+  another administrative/database port → **CRITICAL**
+- Public ingress covering every port (`-1` / 0-65535) → **CRITICAL**
+- Any other public ingress port → **HIGH**
+
+Both CloudTrail's `{"items": [...]}` shape and flat generic parameters
+(`cidr_ip`, `from_port`, `protocol`) are supported.
+
+### 9. CloudTrail tampering — `cloudtrail_tampering`
+
+- `StopLogging`, `DeleteTrail`, `DeleteEventDataStore` → **CRITICAL**
+- `UpdateTrail`, `PutEventSelectors`, `PutInsightSelectors`,
+  `UpdateEventDataStore` → **HIGH**
 
 ---
 
@@ -420,6 +465,23 @@ critical_travel_hours = 1
 [impossible_travel.geoip]
 backend = "event"             # event | maxmind | http
 
+[mfa]
+enabled = true
+
+[root_usage]
+enabled = true
+critical_actions = ["createaccesskey", "stoplogging", "deletetrail"]
+
+[access_keys]
+enabled = true
+
+[security_groups]
+enabled = true
+sensitive_ports = [22, 3389, 1433, 3306, 5432, 6379, 9200, 27017]
+
+[cloudtrail]
+enabled = true
+
 [notifications]
 enabled = false
 min_severity = "high"
@@ -474,10 +536,10 @@ Reference run (100,019 events, 22 MB, Windows / Python 3.14, median of 3):
 
 | Phase | Time |
 |---|---|
-| Ingest + normalise | ~2.7 s (~37k events/s) |
-| Run four detectors | ~2.9 s |
+| Ingest + normalise | ~1.3 s (~78k events/s) |
+| Run nine detectors | ~1.3 s |
 | Persist to SQLite | ~0.01 s |
-| **Total** | **~5.6 s (~18k events/s end-to-end)** |
+| **Total** | **~2.6 s (~38k events/s end-to-end)** |
 
 Timings depend heavily on disk/antivirus activity; the script reports both the
 median and the best run. Large-scan optimisations include vectorised detector
@@ -493,7 +555,8 @@ cloudsentinel/
 ├── cloudsentinel/
 │   ├── adapters/cloudtrail.py   # CloudTrail + CloudWatch Logs → generic schema
 │   ├── api.py                   # FastAPI service for the mobile client
-│   ├── detectors/               # brute force, travel, storage, IAM, policies
+│   ├── detectors/               # brute force, travel, storage, IAM, identity,
+│   │                            #   security groups, CloudTrail tampering
 │   ├── cli.py                   # scan / report / notify / init / demo / serve
 │   ├── config.py                # dataclass config + TOML/JSON loading
 │   ├── dashboard.py             # Streamlit console
@@ -528,7 +591,7 @@ cloudsentinel/
 ├── scripts/benchmark.py         # 100k-event performance harness
 ├── scripts/generate_sample_data.py
 ├── scripts/make_dev_cert.py      # self-signed TLS certificate generator
-├── tests/                       # 214 pytest tests + real AWS fixture
+├── tests/                       # 254 pytest tests + real AWS fixture
 ├── Dockerfile
 ├── docker-compose.yml
 ├── cloudsentinel.example.toml
@@ -543,7 +606,7 @@ cloudsentinel/
 python -m pytest
 ```
 
-214 Python tests (1 skipped on Windows) covering:
+254 Python tests (1 skipped on Windows) covering:
 
 - generic JSON / JSONL / CSV, gzip, CloudTrail `Records` and CloudWatch Logs
   wrappers (including a genuine AWS subscription fixture)
@@ -555,6 +618,9 @@ python -m pytest
 - public policy/ACL severity matrix, `Principal` variants and non-storage
   false-positive guards
 - wildcard permissions, admin attachments and URL-encoded policies
+- MFA removal, root usage, access-key creation, open security groups and
+  CloudTrail tampering, including both CloudTrail and flat parameter shapes
+  and per-rule severity boundaries
 - SQLite insert / update / merge / suppression / filters
 - triage state machine, in-place schema migration, assignment/close/reopen,
   rescan persistence, `PATCH /api/alerts/{id}` and status filters
@@ -617,9 +683,9 @@ product. The honest gap list, roughly in value order:
   multi-worker deployment needs a shared store and a real secret manager.
 
 **Detection coverage**
-- Four detectors only. High-value next rules: MFA disabled/deleted, root
-  account use, access-key creation, security-group opened to `0.0.0.0/0`,
-  CloudTrail logging stopped, KMS key deletion, guardrail/SCP changes.
+- Nine event-driven detectors cover the most common identity, storage, network
+  and audit-tampering signals. Still missing: KMS key deletion,
+  guardrail/SCP changes, VPC flow-log gaps and inventory-based checks.
 - Detections are batch, not streaming. Add EventBridge/S3/SQS consumers or
   CloudTrail Lake queries for near-real-time coverage.
 - No threat-intel enrichment (known-bad IPs, Tor exit nodes) and no
@@ -650,8 +716,8 @@ product. The honest gap list, roughly in value order:
 2. **Per-user auth** — OIDC for the console and scoped API keys; TLS, token
    rotation and triage are already in place, identity is the remaining gate
    for a shared environment.
-3. **Additional detections** — MFA/root/access-key/security-group/CloudTrail
-   tampering rules to widen coverage beyond the current four engines.
+3. **CI and a shared backend** — GitHub Actions, a coverage gate and Postgres
+   so multiple analysts can use one deployment safely.
 
 ---
 

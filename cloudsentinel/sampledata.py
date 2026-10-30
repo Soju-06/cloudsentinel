@@ -1,11 +1,13 @@
 """Deterministic synthetic audit data used for demos and manual testing.
 
-The generated files intentionally contain a mix of benign activity and three
+The generated files intentionally contain a mix of benign activity and
 realistic incident patterns so every detector has something to find:
 
 * credential-stuffing bursts against two users (one followed by a success)
 * a public bucket policy and a public-read ACL
 * a wildcard IAM policy and an administrative managed-policy attachment
+* MFA removal, access-key creation, root usage, an open SSH rule and
+  CloudTrail logging being stopped
 """
 
 from __future__ import annotations
@@ -197,6 +199,76 @@ def build_generic_events(seed: int = 1337, days: int = 7, noise: int = 140) -> l
         policyArn="arn:aws:iam::aws:policy/AdministratorAccess",
     )
 
+    # ------------------------------------------------------ identity attacks
+    emit(
+        start + timedelta(days=5, hours=16),
+        "aws.iam",
+        "DeactivateMFADevice",
+        "alice",
+        "10.0.4.12",
+        resource="bob",
+        userName="bob",
+        serialNumber="arn:aws:iam::123456789012:mfa/bob",
+    )
+    emit(
+        start + timedelta(days=5, hours=17),
+        "aws.iam",
+        "CreateAccessKey",
+        "alice",
+        "10.0.4.12",
+        resource="carol",
+        userName="carol",
+    )
+    emit(
+        start + timedelta(days=6, hours=2),
+        "aws.signin",
+        "ConsoleLogin",
+        "root",
+        "198.51.100.77",
+        status="success",
+    )
+    emit(
+        start + timedelta(days=6, hours=3),
+        "aws.iam",
+        "CreateAccessKey",
+        "root",
+        "198.51.100.77",
+        resource="root",
+        userName="root",
+    )
+
+    # ------------------------------------------------------ network exposure
+    emit(
+        start + timedelta(days=6, hours=5),
+        "aws.ec2",
+        "AuthorizeSecurityGroupIngress",
+        "bob",
+        "10.0.4.18",
+        resource="sg-0a1b2c3d",
+        groupId="sg-0a1b2c3d",
+        ipPermissions={
+            "items": [
+                {
+                    "ipProtocol": "tcp",
+                    "fromPort": 22,
+                    "toPort": 22,
+                    "ipRanges": {"items": [{"cidrIp": "0.0.0.0/0"}]},
+                }
+            ]
+        },
+    )
+
+    # -------------------------------------------------- audit-log tampering
+    emit(
+        start + timedelta(days=6, hours=6),
+        "aws.cloudtrail",
+        "StopLogging",
+        "dave",
+        "10.0.4.22",
+        resource="acme-trail",
+        trailName="acme-trail",
+    )
+
     events.sort(key=lambda item: item["timestamp"])
     return events
 
@@ -220,6 +292,7 @@ def build_cloudtrail_events(seed: int = 1337) -> list[dict]:
         error_code: str = "",
         request_parameters: dict[str, Any] | None = None,
         resources: list[dict[str, str]] | None = None,
+        identity: dict[str, Any] | None = None,
     ) -> None:
         counter["value"] += 1
         record: dict[str, Any] = {
@@ -230,7 +303,8 @@ def build_cloudtrail_events(seed: int = 1337) -> list[dict]:
             "eventName": name,
             "awsRegion": "us-east-1",
             "sourceIPAddress": ip,
-            "userIdentity": {
+            "userIdentity": identity
+            or {
                 "type": "IAMUser",
                 "principalId": f"AIDA{seed}{counter['value']:04d}",
                 "arn": f"arn:aws:iam::123456789012:user/{user}",
@@ -301,6 +375,66 @@ def build_cloudtrail_events(seed: int = 1337) -> list[dict]:
         request_parameters={
             "roleName": "ct-deploy",
             "policyArn": "arn:aws:iam::aws:policy/AdministratorAccess",
+        },
+    )
+
+    # MFA removed for a different user.
+    emit(
+        start + timedelta(days=3, hours=12),
+        "DeactivateMFADevice",
+        "heidi",
+        "203.0.113.11",
+        source="iam.amazonaws.com",
+        request_parameters={"userName": "grace"},
+    )
+
+    # Access key created for a different user.
+    emit(
+        start + timedelta(days=3, hours=13),
+        "CreateAccessKey",
+        "frank",
+        "203.0.113.99",
+        source="iam.amazonaws.com",
+        request_parameters={"userName": "grace"},
+    )
+
+    # Root user stopping audit logging.
+    emit(
+        start + timedelta(days=4, hours=2),
+        "StopLogging",
+        "root",
+        "198.51.100.77",
+        source="cloudtrail.amazonaws.com",
+        request_parameters={"name": "ct-audit-trail"},
+        identity={
+            "type": "Root",
+            "principalId": "123456789012",
+            "arn": "arn:aws:iam::123456789012:root",
+            "accountId": "123456789012",
+        },
+    )
+
+    # SSH open to the internet added through the CLI/SDK list shape.
+    emit(
+        start + timedelta(days=4, hours=4),
+        "AuthorizeSecurityGroupIngress",
+        "grace",
+        "203.0.113.10",
+        source="ec2.amazonaws.com",
+        request_parameters={
+            "groupId": "sg-ct-open",
+            "ipPermissions": {
+                "items": [
+                    {
+                        "ipProtocol": "tcp",
+                        "fromPort": 22,
+                        "toPort": 22,
+                        "ipRanges": {
+                            "items": [{"cidrIp": "0.0.0.0/0"}],
+                        },
+                    }
+                ]
+            },
         },
     )
 

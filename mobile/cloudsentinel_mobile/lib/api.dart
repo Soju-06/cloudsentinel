@@ -8,6 +8,11 @@ const detectorLabels = <String, String>{
   'impossible_travel': 'IMPOSSIBLE TRAVEL',
   'public_storage': 'PUBLIC STORAGE',
   'iam_permissions': 'IAM PERMISSIONS',
+  'mfa_changes': 'MFA CHANGES',
+  'root_usage': 'ROOT USAGE',
+  'access_key_creation': 'ACCESS KEYS',
+  'security_group_open': 'OPEN SECURITY GROUP',
+  'cloudtrail_tampering': 'CLOUDTRAIL TAMPERING',
 };
 
 class ApiException implements Exception {

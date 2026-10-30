@@ -16,6 +16,12 @@ def test_defaults():
     assert config.brute_force.window_minutes == 10
     assert config.suppression_minutes == 60
     assert config.public_storage.enabled is True
+    assert config.mfa.enabled is True
+    assert config.root_usage.enabled is True
+    assert config.access_keys.enabled is True
+    assert config.cloudtrail.enabled is True
+    assert 22 in config.security_groups.sensitive_ports
+    assert config.root_usage.critical_actions
 
 
 def test_from_dict_overrides():
@@ -71,3 +77,28 @@ def test_invalid_group_by_rejected():
 def test_invalid_threshold_rejected():
     with pytest.raises(ValueError):
         BruteForceConfig(threshold=0)
+
+
+def test_new_detector_sections_load_from_dict():
+    config = Config.from_dict(
+        {
+            "mfa": {"enabled": False},
+            "root_usage": {"critical_actions": ["GetCallerIdentity"]},
+            "access_keys": {"enabled": False},
+            "security_groups": {"sensitive_ports": [8080]},
+            "cloudtrail": {"enabled": False},
+        }
+    )
+
+    assert config.mfa.enabled is False
+    assert config.root_usage.critical_actions == ["GetCallerIdentity"]
+    assert config.access_keys.enabled is False
+    assert config.security_groups.sensitive_ports == [8080]
+    assert config.cloudtrail.enabled is False
+
+
+def test_invalid_sensitive_port_rejected():
+    from cloudsentinel.config import SecurityGroupConfig
+
+    with pytest.raises(ValueError):
+        SecurityGroupConfig(sensitive_ports=[70000])

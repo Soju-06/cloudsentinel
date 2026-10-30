@@ -152,6 +152,11 @@ def test_sample_data_triggers_every_detector(tmp_path):
         "public_storage",
         "iam_permissions",
         "impossible_travel",
+        "mfa_changes",
+        "root_usage",
+        "access_key_creation",
+        "security_group_open",
+        "cloudtrail_tampering",
     }
     assert any(alert.severity == Severity.CRITICAL for alert in alerts)
     assert any(alert.severity == Severity.HIGH for alert in alerts)

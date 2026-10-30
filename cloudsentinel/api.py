@@ -80,6 +80,31 @@ DETECTORS = [
         "label": "IAM permissions",
         "description": "Wildcard or administrative permission grants.",
     },
+    {
+        "name": "mfa_changes",
+        "label": "MFA changes",
+        "description": "MFA devices disabled or deleted.",
+    },
+    {
+        "name": "root_usage",
+        "label": "Root account",
+        "description": "Activity performed by the account root user.",
+    },
+    {
+        "name": "access_key_creation",
+        "label": "Access keys",
+        "description": "Long-lived IAM access keys created.",
+    },
+    {
+        "name": "security_group_open",
+        "label": "Open security group",
+        "description": "Ingress rules exposed to 0.0.0.0/0 or ::/0.",
+    },
+    {
+        "name": "cloudtrail_tampering",
+        "label": "CloudTrail tampering",
+        "description": "Audit logging stopped, deleted or re-scoped.",
+    },
 ]
 
 _TRUTHY = {"1", "true", "yes", "on"}
