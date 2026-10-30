@@ -336,11 +336,12 @@ Phases 0–17 complete and verified:
 - Security verified live: HTTPS on 8443 with a generated certificate (health
   200, no token 401, `X-API-Token` 200, bearer 200, 6th request 429 with
   `retry-after: 60`); plain-HTTP LAN banner warns about unencrypted tokens.
-- Android release APK rebuilt from final source and copied to
-  `dist/CloudSentinel-1.0.0.apk` (49.8 MB, debug signing; sideload).
-  SHA-256 `9AC7D8128AD48974DB289A01F408AD067562A1E12D2F82E8ABD4FCD2EE08F24D`.
-- Windows app built at `app/CloudSentinel.exe` (20.7 MB) and verified live
-  against the API; viewport/DPI probe matches the window at 125 % scaling.
+- Android release APK rebuilt from Phase 17 source (with the triage UI) and
+  copied to `dist/CloudSentinel-1.0.0.apk` (49.9 MB, debug signing; sideload).
+  SHA-256 `B2BD02981242A53DC5F8EF55201FD09F10D9A3249C6E7ED1C2F14B5E197ED603`.
+- Windows app rebuilt from Phase 17 source at `app/` (20.7 MB total, including
+  the Flutter web bundle) and verified live against the API; viewport/DPI probe
+  matches the window at 125 % scaling.
 - Connection-recovery screen verified by off-screen render in both states:
   server offline (error screen with command, golf scene at rest) and server
   online (dashboard).
