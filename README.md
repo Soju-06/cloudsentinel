@@ -15,6 +15,12 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
       └─ POST /api/ingest (EventBridge / log shipper)
 ```
 
+## Screenshots
+
+| Streamlit console (dashboard) | Android app (phone) |
+|:---:|:---:|
+| ![CloudSentinel console](docs/screenshots/dashboard.png) | ![CloudSentinel phone app](docs/screenshots/phone.png) |
+
 ---
 
 ## Highlights
