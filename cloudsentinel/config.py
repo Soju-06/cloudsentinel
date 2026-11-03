@@ -181,6 +181,24 @@ class CloudTrailConfig:
 
 
 @dataclass
+class StreamConfig:
+    """Rolling-window settings for near-real-time ingestion."""
+
+    enabled: bool = True
+    window_minutes: int = 60
+    max_events: int = 20_000
+    poll_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.window_minutes < 1:
+            raise ValueError("stream.window_minutes must be >= 1")
+        if self.max_events < 100:
+            raise ValueError("stream.max_events must be >= 100")
+        if self.poll_seconds <= 0:
+            raise ValueError("stream.poll_seconds must be > 0")
+
+
+@dataclass
 class GeoIPConfig:
     """Location enrichment backend.
 
@@ -252,6 +270,7 @@ class Config:
     access_keys: AccessKeyConfig = field(default_factory=AccessKeyConfig)
     security_groups: SecurityGroupConfig = field(default_factory=SecurityGroupConfig)
     cloudtrail: CloudTrailConfig = field(default_factory=CloudTrailConfig)
+    stream: StreamConfig = field(default_factory=StreamConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
     suppression_minutes: int = 60
 
@@ -283,6 +302,7 @@ class Config:
             access_keys=_build(AccessKeyConfig, data.get("access_keys")),
             security_groups=_build(SecurityGroupConfig, data.get("security_groups")),
             cloudtrail=_build(CloudTrailConfig, data.get("cloudtrail")),
+            stream=_build(StreamConfig, data.get("stream")),
             notifications=_build(NotificationConfig, data.get("notifications")),
             suppression_minutes=int(data.get("suppression_minutes", 60)),
         )

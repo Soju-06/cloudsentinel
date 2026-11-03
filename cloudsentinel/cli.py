@@ -133,12 +133,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="expose POST /api/scan to trigger detection scans remotely",
     )
     serve.add_argument(
+        "--allow-ingest",
+        action="store_true",
+        help="expose POST /api/ingest for pushed records (EventBridge-style)",
+    )
+    serve.add_argument(
         "--cors",
         default=None,
         help=(
             "comma-separated browser origins; default allows loopback only, "
             "use '*' to allow every origin"
         ),
+    )
+
+    watch = subparsers.add_parser(
+        "watch", help="poll a directory and detect new events near-real-time"
+    )
+    watch.add_argument("-i", "--input", default=str(RAW_DIR), help="raw log directory")
+    watch.add_argument("-d", "--db", default=str(DEFAULT_DB_PATH), help="alerts database")
+    watch.add_argument("-c", "--config", default=None, help="TOML/JSON config file")
+    watch.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        help="seconds between directory polls (default: [stream].poll_seconds)",
+    )
+    watch.add_argument(
+        "--once",
+        action="store_true",
+        help="process the current backlog once and exit",
+    )
+    watch.add_argument(
+        "--notify",
+        action="store_true",
+        help="send alerts through configured notification channels",
+    )
+    watch.add_argument(
+        "--window-minutes",
+        type=int,
+        default=None,
+        help="how much event context detectors keep (default: 60)",
+    )
+    watch.add_argument(
+        "--max-events",
+        type=int,
+        default=None,
+        help="maximum events kept in the rolling buffer (default: 20000)",
     )
 
     triage = subparsers.add_parser(
@@ -197,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
         return _notify(args)
     if args.command == "serve":
         return _serve(args)
+    if args.command == "watch":
+        return _watch(args)
     if args.command == "tokens":
         return _tokens(args)
     if args.command == "triage":
@@ -353,6 +395,80 @@ def _security_banner(
     return lines
 
 
+def _watch(args: argparse.Namespace) -> int:
+    from .stream import DirectoryWatcher, StreamProcessor, watch_directory
+
+    raw_directory = Path(args.input)
+    if not raw_directory.is_dir():
+        print(f"error: input directory not found: {raw_directory}")
+        return 2
+
+    config = Config.load(args.config)
+    interval = args.interval if args.interval is not None else config.stream.poll_seconds
+    if interval <= 0:
+        print("error: --interval must be greater than zero")
+        return 2
+
+    try:
+        processor = StreamProcessor(
+            AlertStore(args.db),
+            config,
+            window_minutes=args.window_minutes,
+            max_events=args.max_events,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 2
+
+    watcher = DirectoryWatcher(raw_directory)
+    print("CloudSentinel watch")
+    print(f"  directory      : {raw_directory}")
+    print(f"  poll interval  : {interval:g}s")
+    print(f"  event window   : {processor.window.total_seconds() / 60:g} min")
+    print(f"  buffer limit   : {processor.max_events} events")
+    print("Press Ctrl+C to stop.")
+
+    def report(paths, alerts) -> None:
+        if not paths:
+            return
+        print(f"  {len(paths)} changed file(s) -> {len(alerts)} alert(s)", flush=True)
+        if alerts:
+            for alert in alerts[:10]:
+                print(
+                    f"    [{alert.severity.label:8}] {alert.title}"
+                    f" -> {alert.entity} ({alert.event_count} events)"
+                )
+            if args.notify:
+                _print_notifications(
+                    notify_alerts(alerts, config.notifications)
+                )
+        elif args.verbose:
+            print(f"    buffered: {processor.buffered}", flush=True)
+
+    try:
+        stats = watch_directory(
+            processor,
+            watcher,
+            interval=interval,
+            max_polls=1 if args.once else None,
+            on_batch=report,
+        )
+    except KeyboardInterrupt:  # pragma: no cover - interactive path
+        stats = processor.stats
+
+    print(
+        f"Batches {stats.batches}, received {stats.received},"
+        f" accepted {stats.accepted}, duplicates {stats.duplicates},"
+        f" dropped {stats.dropped}"
+    )
+    print(
+        f"Alerts {stats.alerts} (inserted {stats.inserted},"
+        f" merged {stats.merged}, updated {stats.updated})"
+    )
+    print(f"Buffered events: {stats.buffered}")
+    return 0
+
+
 def _serve(args: argparse.Namespace) -> int:
     tls_cert = getattr(args, "tls_cert", None)
     tls_key = getattr(args, "tls_key", None)
@@ -405,6 +521,7 @@ def _serve(args: argparse.Namespace) -> int:
         config=config,
         token=token,
         allow_scan=args.allow_scan,
+        allow_ingest=args.allow_ingest,
         cors_origins=origins,
         token_store=token_store,
         rate_limit=args.rate_limit,
@@ -421,6 +538,10 @@ def _serve(args: argparse.Namespace) -> int:
         rate_limit=args.rate_limit,
     ):
         print(f"  {line}")
+    print(
+        "  Ingest endpoint: "
+        + ("enabled (POST /api/ingest)" if args.allow_ingest else "disabled")
+    )
 
     if host not in _LOOPBACK_HOSTS:
         try:

@@ -200,3 +200,95 @@ def test_open_api_when_no_token_configured(client):
 def test_docs_are_served(client):
     assert client.get("/docs").status_code == 200
     assert "CloudSentinel API" in client.get("/openapi.json").json()["info"]["title"]
+
+
+def _cloudtrail_failure(index: int) -> dict:
+    return {
+        "eventVersion": "1.09",
+        "eventID": f"ct-ingest-{index}",
+        "eventTime": f"2026-06-01T10:0{index}:00Z",
+        "eventSource": "signin.amazonaws.com",
+        "eventName": "ConsoleLogin",
+        "awsRegion": "us-east-1",
+        "sourceIPAddress": "203.0.113.50",
+        "userIdentity": {
+            "type": "IAMUser",
+            "arn": "arn:aws:iam::123456789012:user/carol",
+            "userName": "carol",
+        },
+        "errorCode": "Failed authentication",
+    }
+
+
+@pytest.fixture
+def ingest_client(tmp_path):
+    app = create_app(
+        db_path=tmp_path / "ingest.db",
+        raw_dir=tmp_path / "raw",
+        token=TOKEN,
+        allow_ingest=True,
+    )
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_ingest_is_disabled_by_default(client):
+    response = client.post("/api/ingest", headers=_auth(), json=[])
+
+    assert response.status_code == 403
+    assert "allow-ingest" in response.json()["detail"]
+
+
+def test_ingest_detects_and_dedupes(ingest_client):
+    payload = {"Records": [_cloudtrail_failure(index) for index in range(5)]}
+
+    first = ingest_client.post("/api/ingest", headers=_auth(), json=payload)
+
+    assert first.status_code == 200
+    body = first.json()
+    assert body["received"] == 5
+    assert body["alerts"] == 1
+    assert body["findings"][0]["detector"] == "brute_force"
+    assert body["stats"]["accepted"] == 5
+    assert body["stats"]["inserted"] == 1
+
+    second = ingest_client.post("/api/ingest", headers=_auth(), json=payload)
+
+    assert second.status_code == 200
+    assert second.json()["alerts"] == 0
+    assert second.json()["stats"]["duplicates"] == 5
+    assert second.json()["stats"]["inserted"] == 1
+
+    listing = ingest_client.get("/api/alerts", headers=_auth()).json()
+    assert listing["total"] == 1
+
+
+def test_ingest_accepts_a_single_record(ingest_client):
+    response = ingest_client.post(
+        "/api/ingest", headers=_auth(), json=_cloudtrail_failure(0)
+    )
+
+    assert response.status_code == 200
+    assert response.json()["received"] == 1
+
+
+def test_ingest_rejects_a_body_without_records(ingest_client):
+    response = ingest_client.post("/api/ingest", headers=_auth(), json="hello")
+
+    assert response.status_code == 400
+
+
+def test_ingest_enforces_batch_limit(ingest_client, monkeypatch):
+    import cloudsentinel.api as api_module
+
+    monkeypatch.setattr(api_module, "MAX_INGEST_RECORDS", 2)
+    payload = [_cloudtrail_failure(index) for index in range(3)]
+
+    response = ingest_client.post("/api/ingest", headers=_auth(), json=payload)
+
+    assert response.status_code == 413
+
+
+def test_health_reports_ingest_flag(client, ingest_client):
+    assert client.get("/health").json()["ingest_enabled"] is False
+    assert ingest_client.get("/health").json()["ingest_enabled"] is True

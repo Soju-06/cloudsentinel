@@ -9,9 +9,10 @@ or the native Android and Windows apps.
 ```
 raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts ──► Streamlit console
 (JSON/JSONL/CSV/gz)  (Pandas)      (9 engines)   (deduplicated)     + CSV/JSON/HTML/PDF
-                                                                   + Slack/webhook/email
-                                                                   + REST API ──► Android APK
-                                                                                └► Windows app
+      ▲                                                    │        + Slack/webhook/email
+      │                                                    └────────+ REST API ──► Android APK
+      ├─ watch (directory poll, rolling window)                      └► Windows app
+      └─ POST /api/ingest (EventBridge / log shipper)
 ```
 
 ---
@@ -34,6 +35,10 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
   for SSH/RDP/database ports and all-port rules.
 - **Audit tampering** — CloudTrail logging stopped, deleted or re-scoped, both
   in S3-dump and CLI/SDK parameter shapes.
+- **Near-real-time ingestion** — `watch` polls a directory for new files and
+  `POST /api/ingest` accepts pushed records (an EventBridge rule or a log
+  shipper). A rolling in-memory window keeps window-based detectors working,
+  and records are de-duplicated by event ID across batches.
 - **Hybrid storage** — raw events stay in files (`data/raw/`); only alerts are
   persisted in SQLite for history, filtering and de-duplication.
 - **Alert triage** — acknowledge, assign, close and reopen alerts from the
@@ -64,7 +69,7 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 - **Futuristic console** — dark glassmorphism theme, neon severity badges,
   Plotly charts, top-risk entities and one-click exports.
 - **Docker** — `Dockerfile` + `docker-compose.yml` for a reproducible console.
-- **254 automated Python tests** (253 pass, 1 skipped on Windows) plus
+- **275 automated Python tests** (274 pass, 1 skipped on Windows) plus
   **29 Flutter tests** covering ingestion, every detector, storage, reporting,
   notifications, configuration, CLI, API auth/rotation/rate limits/TLS,
   triage and status transitions, hardening scenarios, the Dart API client and
@@ -247,13 +252,15 @@ Both CloudTrail's `{"items": [...]}` shape and flat generic parameters
 
 ```text
 python -m cloudsentinel scan [-i PATH] [-d DB] [-c CONFIG] [--reset] [--notify]
+python -m cloudsentinel watch [-i PATH] [-d DB] [-c CONFIG] [--interval S] [--once]
+                              [--window-minutes N] [--max-events N] [--notify]
 python -m cloudsentinel report [-f csv|json|html|pdf] [-o FILE] [--severity ...]
 python -m cloudsentinel notify [-d DB] [-c CONFIG] [--min-severity ...]
 python -m cloudsentinel init [-d DB]
 python -m cloudsentinel demo [-o RAW_DIR] [--seed N]
 python -m cloudsentinel serve [--host H] [--port P] [--token T] [--allow-scan]
-                              [--tls-cert PEM --tls-key PEM] [--rate-limit N]
-                              [--token-file PATH] [--cors ORIGINS]
+                              [--allow-ingest] [--tls-cert PEM --tls-key PEM]
+                              [--rate-limit N] [--token-file PATH] [--cors ORIGINS]
 python -m cloudsentinel tokens add|list|revoke [--label L] [--token-file PATH]
 ```
 
@@ -282,6 +289,54 @@ records skipped by event ID, so data-quality problems are visible.
 
 ---
 
+## Near-real-time ingestion
+
+Two paths turn CloudSentinel from a batch scanner into a near-real-time
+detector. Both feed the same detectors and alert store, and both de-duplicate
+by event ID, so retries and re-reads are safe.
+
+**Pull: directory watch.** Point `watch` at a directory that a log shipper or
+CloudTrail export writes into:
+
+```powershell
+# Poll data/raw every 5 seconds, keeping 60 minutes of detector context
+python -m cloudsentinel watch --interval 5
+
+# Process the current backlog once (cron / CI friendly)
+python -m cloudsentinel watch --once
+
+# Watch a staging inbox and push new findings to Slack/email
+python -m cloudsentinel watch -i D:\cloudtrail-inbox --notify
+```
+
+New or modified `.json`, `.jsonl`, `.ndjson`, `.csv` and `.gz` files are read;
+record-level de-duplication means a restart can replay the backlog without
+duplicate alerts. A rolling window (default 60 minutes / 20 000 events) gives
+window-based detectors such as brute force and impossible travel the context
+they need.
+
+**Push: HTTP webhook.** Start the API with `--allow-ingest` and post records
+from EventBridge, a Lambda forwarder or any log shipper:
+
+```powershell
+python -m cloudsentinel serve --host 0.0.0.0 --port 8080 --token YOUR_TOKEN --allow-ingest
+
+curl -X POST http://127.0.0.1:8080/api/ingest `
+  -H "X-API-Token: YOUR_TOKEN" -H "Content-Type: application/json" `
+  -d '{"Records": [ ... CloudTrail records ... ]}'
+```
+
+The body may be one record, a JSON array, a CloudTrail `{"Records": [...]}`
+dump or a CloudWatch Logs subscription payload. The response reports how many
+records were accepted, which alerts the batch touched and lifetime stream
+counters. Batches are capped at 5 000 records and share the scan rate limit.
+
+`POST /api/ingest` is disabled unless `--allow-ingest` (or
+`CLOUDSENTINEL_API_ALLOW_INGEST=1`) is set, because it writes to the alert
+store.
+
+---
+
 ## REST API
 
 The mobile app and any other client read from a small FastAPI service:
@@ -301,13 +356,14 @@ python -m cloudsentinel serve --host 0.0.0.0 --port 8443 --token YOUR_TOKEN `
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `GET /health` | public | version, stored alert count, auth/scan/rate-limit posture |
+| `GET /health` | public | version, stored alert count, auth/scan/ingest/rate-limit posture |
 | `GET /api/summary` | token | totals by severity/detector/status, entities, DB stats |
 | `GET /api/alerts` | token | filtered/paginated alerts (`severity`, `detector`, `status`, `search`, `since`, `until`, `limit`, `offset`) |
 | `GET /api/alerts/{id}` | token | one alert including evidence |
 | `PATCH /api/alerts/{id}` | token | triage: `{"status": "...", "assignee": "..."}` (null clears the assignee) |
 | `GET /api/detectors` | token | detector labels and workflow statuses for client chips |
 | `POST /api/scan` | token | re-scan `data/raw` (only with `--allow-scan`) |
+| `POST /api/ingest` | token | accept pushed records and detect immediately (only with `--allow-ingest`) |
 
 **Authentication.** Send the token as `X-API-Token: <token>` or
 `Authorization: Bearer <token>`. `--token` is the bootstrap value; for anything
@@ -482,6 +538,12 @@ sensitive_ports = [22, 3389, 1433, 3306, 5432, 6379, 9200, 27017]
 [cloudtrail]
 enabled = true
 
+[stream]
+enabled = true
+window_minutes = 60           # detector context kept in memory
+max_events = 20000            # hard cap on the rolling buffer
+poll_seconds = 5              # watch mode directory poll interval
+
 [notifications]
 enabled = false
 min_severity = "high"
@@ -557,7 +619,7 @@ cloudsentinel/
 │   ├── api.py                   # FastAPI service for the mobile client
 │   ├── detectors/               # brute force, travel, storage, IAM, identity,
 │   │                            #   security groups, CloudTrail tampering
-│   ├── cli.py                   # scan / report / notify / init / demo / serve
+│   ├── cli.py                   # scan / watch / report / notify / serve / triage
 │   ├── config.py                # dataclass config + TOML/JSON loading
 │   ├── dashboard.py             # Streamlit console
 │   ├── db.py                    # SQLite alert repository
@@ -565,11 +627,12 @@ cloudsentinel/
 │   ├── ingest.py                # JSON / JSONL / CSV / gzip normalisation
 │   ├── models.py                # Alert dataclass + fingerprints
 │   ├── notify.py                # Slack / webhook / SMTP notifications
-│   ├── pipeline.py              # orchestration and persistence
+│   ├── pipeline.py              # batch orchestration and persistence
 │   ├── ratelimit.py             # per-client sliding-window limiter
 │   ├── report.py                # CSV / JSON / HTML / PDF exports
 │   ├── sampledata.py            # deterministic incident dataset
 │   ├── severity.py              # CRITICAL/HIGH/MEDIUM/LOW/INFO
+│   ├── stream.py                # rolling-window streaming ingestion
 │   ├── tokens.py                # rotating API token store (salted hashes)
 │   └── utils.py                 # timestamp + JSON helpers
 ├── mobile/cloudsentinel_mobile/ # native Flutter client (Android + web)
@@ -591,7 +654,7 @@ cloudsentinel/
 ├── scripts/benchmark.py         # 100k-event performance harness
 ├── scripts/generate_sample_data.py
 ├── scripts/make_dev_cert.py      # self-signed TLS certificate generator
-├── tests/                       # 254 pytest tests + real AWS fixture
+├── tests/                       # 275 pytest tests + real AWS fixture
 ├── Dockerfile
 ├── docker-compose.yml
 ├── cloudsentinel.example.toml
@@ -606,7 +669,7 @@ cloudsentinel/
 python -m pytest
 ```
 
-254 Python tests (1 skipped on Windows) covering:
+275 Python tests (1 skipped on Windows) covering:
 
 - generic JSON / JSONL / CSV, gzip, CloudTrail `Records` and CloudWatch Logs
   wrappers (including a genuine AWS subscription fixture)
@@ -622,6 +685,9 @@ python -m pytest
   CloudTrail tampering, including both CloudTrail and flat parameter shapes
   and per-rule severity boundaries
 - SQLite insert / update / merge / suppression / filters
+- streaming batches: cross-batch window context, ID and content-hash
+  de-duplication, buffer pruning/caps, directory polling, `--once` CLI runs and
+  `POST /api/ingest` gating, batching and dedupe
 - triage state machine, in-place schema migration, assignment/close/reopen,
   rescan persistence, `PATCH /api/alerts/{id}` and status filters
 - CSV/JSON/HTML/PDF report shapes, HTML escaping and PDF magic bytes
@@ -686,8 +752,10 @@ product. The honest gap list, roughly in value order:
 - Nine event-driven detectors cover the most common identity, storage, network
   and audit-tampering signals. Still missing: KMS key deletion,
   guardrail/SCP changes, VPC flow-log gaps and inventory-based checks.
-- Detections are batch, not streaming. Add EventBridge/S3/SQS consumers or
-  CloudTrail Lake queries for near-real-time coverage.
+- Detections run on a rolling in-memory window (directory watch or the
+  `/api/ingest` webhook), which gives near-real-time coverage but does not
+  survive a restart and is per-process. A durable queue (SQS/Kafka) and a
+  shared buffer are the next step for multi-worker deployments.
 - No threat-intel enrichment (known-bad IPs, Tor exit nodes) and no
   entity baselining/anomaly scoring.
 - Triage is deliberately small: status + assignee, no comments, SLA timers,
@@ -711,13 +779,13 @@ product. The honest gap list, roughly in value order:
 - No infrastructure-as-code, no schema/versioning policy for stored evidence.
 
 **Suggested next three features** (highest impact for effort):
-1. **Streaming ingestion** — S3/SQS poller or EventBridge webhook so findings
-   appear without manual scans.
-2. **Per-user auth** — OIDC for the console and scoped API keys; TLS, token
+1. **Per-user auth** — OIDC for the console and scoped API keys; TLS, token
    rotation and triage are already in place, identity is the remaining gate
    for a shared environment.
-3. **CI and a shared backend** — GitHub Actions, a coverage gate and Postgres
+2. **CI and a shared backend** — GitHub Actions, a coverage gate and Postgres
    so multiple analysts can use one deployment safely.
+3. **Durable streaming** — SQS/Kafka consumer plus a shared buffer so the
+   rolling window survives restarts and scales beyond one worker.
 
 ---
 

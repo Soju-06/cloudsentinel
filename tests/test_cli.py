@@ -118,3 +118,35 @@ def test_cli_triage(tmp_path, make_alert, capsys):
 
     store.set_triage(alert_id, status="closed")
     assert main(["triage", str(alert_id), "-d", str(db_path), "--status", "acknowledged"]) == 2
+
+
+def test_cli_watch_once(tmp_path, capsys):
+    import json
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    records = [
+        {
+            "timestamp": f"2026-07-01T09:0{index}:00Z",
+            "event_source": "aws.signin",
+            "event_name": "ConsoleLogin",
+            "user": "carol",
+            "source_ip": "203.0.113.50",
+            "status": "failure",
+        }
+        for index in range(5)
+    ]
+    (raw / "batch.json").write_text(json.dumps(records), encoding="utf-8")
+    db_path = tmp_path / "watch.db"
+
+    assert main(["watch", "-i", str(raw), "-d", str(db_path), "--once"]) == 0
+
+    output = capsys.readouterr().out
+    assert "CloudSentinel watch" in output
+    assert "Alerts 1" in output
+    assert AlertStore(db_path).count() == 1
+
+
+def test_cli_watch_rejects_missing_directory(tmp_path, capsys):
+    assert main(["watch", "-i", str(tmp_path / "missing"), "-d", str(tmp_path / "a.db")]) == 2
+    assert "input directory not found" in capsys.readouterr().out

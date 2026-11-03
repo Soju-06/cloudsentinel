@@ -22,6 +22,8 @@ def test_defaults():
     assert config.cloudtrail.enabled is True
     assert 22 in config.security_groups.sensitive_ports
     assert config.root_usage.critical_actions
+    assert config.stream.window_minutes == 60
+    assert config.stream.max_events == 20000
 
 
 def test_from_dict_overrides():
@@ -102,3 +104,18 @@ def test_invalid_sensitive_port_rejected():
 
     with pytest.raises(ValueError):
         SecurityGroupConfig(sensitive_ports=[70000])
+
+
+def test_stream_section_loads_and_validates():
+    from cloudsentinel.config import StreamConfig
+
+    config = Config.from_dict({"stream": {"window_minutes": 15, "max_events": 500}})
+    assert config.stream.window_minutes == 15
+    assert config.stream.max_events == 500
+
+    with pytest.raises(ValueError):
+        StreamConfig(window_minutes=0)
+    with pytest.raises(ValueError):
+        StreamConfig(max_events=10)
+    with pytest.raises(ValueError):
+        StreamConfig(poll_seconds=0)

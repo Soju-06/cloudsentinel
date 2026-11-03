@@ -53,6 +53,12 @@ sensitive_ports = [22, 23, 1433, 1521, 3306, 3389, 5432, 5900, 6379, 9200, 9300,
 [cloudtrail]
 enabled = true
 
+[stream]
+enabled = true
+window_minutes = 60           # detector context kept in memory
+max_events = 20000            # hard cap on the rolling buffer
+poll_seconds = 5              # watch mode directory poll interval
+
 [notifications]
 enabled = false
 min_severity = "high"

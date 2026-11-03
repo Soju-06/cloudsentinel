@@ -14,6 +14,7 @@ Endpoints
 ``PATCH /api/alerts/{id}`` acknowledge / assign / close one alert
 ``GET  /api/detectors``   detector metadata for client filters
 ``POST /api/scan``        re-scan the raw directory (opt-in)
+``POST /api/ingest``      accept pushed records near-real-time (opt-in)
 
 Authentication accepts a token in ``X-API-Token`` (legacy) or
 ``Authorization: Bearer``. Tokens come from two places: the bootstrap
@@ -33,7 +34,7 @@ import os
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +42,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .adapters.cloudtrail import extract_records
 from .config import Config
 from .db import AlertStore
 from .paths import DEFAULT_DB_PATH, RAW_DIR
@@ -48,6 +50,7 @@ from .pipeline import scan_files
 from .ratelimit import SlidingWindowLimiter
 from .report import summary
 from .severity import Severity
+from .stream import StreamProcessor
 from .tokens import TokenStore
 from .triage import (
     STATUSES,
@@ -121,6 +124,8 @@ _OPEN_HEADERS = {
 }
 
 MAX_ASSIGNEE_LENGTH = 120
+MAX_INGEST_RECORDS = 5000
+_WRITE_PATHS = {"/api/scan", "/api/ingest"}
 
 
 class TriageUpdate(BaseModel):
@@ -142,6 +147,7 @@ def create_app(
     config: Config | None = None,
     token: str | None = None,
     allow_scan: bool = False,
+    allow_ingest: bool = False,
     cors_origins: tuple[str, ...] | None = None,
     token_store: TokenStore | None = None,
     rate_limit: int | None = None,
@@ -168,6 +174,9 @@ def create_app(
     scan_enabled = allow_scan or os.environ.get(
         "CLOUDSENTINEL_API_ALLOW_SCAN", ""
     ).strip().lower() in _TRUTHY
+    ingest_enabled = allow_ingest or os.environ.get(
+        "CLOUDSENTINEL_API_ALLOW_INGEST", ""
+    ).strip().lower() in _TRUTHY
 
     if rate_limit is None:
         raw_limit = os.environ.get("CLOUDSENTINEL_RATE_LIMIT", "").strip()
@@ -190,6 +199,8 @@ def create_app(
     app.state.config = settings
     app.state.raw_dir = raw_directory
     app.state.scan_enabled = scan_enabled
+    app.state.ingest_enabled = ingest_enabled
+    app.state.stream_processor = None
     app.state.token_store = store_tokens
     app.state.rate_limiter = limiter
     app.state.scan_rate_limiter = scan_limiter
@@ -243,7 +254,7 @@ def create_app(
         path = request.url.path
         if path.startswith("/api/") and (limiter.enabled or scan_limiter.enabled):
             key = _client_key(request)
-            active = scan_limiter if path == "/api/scan" else limiter
+            active = scan_limiter if path in _WRITE_PATHS else limiter
             allowed, retry_after = active.check(key)
             if not allowed:
                 return JSONResponse(
@@ -290,6 +301,7 @@ def create_app(
             "auth_required": auth_required,
             "auth_mode": app.state.auth_mode,
             "scan_enabled": scan_enabled,
+            "ingest_enabled": ingest_enabled,
             "rate_limit_per_minute": limiter.limit,
             "scan_rate_limit_per_minute": scan_limiter.limit,
         }
@@ -418,6 +430,57 @@ def create_app(
             "dropped_events": result.dropped_events,
             "duplicate_events": result.duplicate_events,
             "files": result.files,
+        }
+
+    @app.post("/api/ingest", dependencies=guarded, tags=["scan"])
+    def api_ingest(body: Any = Body(...)) -> dict[str, Any]:
+        """Accept pushed audit records and run detections immediately.
+
+        The body can be a single record, a JSON array, a CloudTrail
+        ``{"Records": [...]}`` dump or a CloudWatch Logs subscription payload.
+        Records are de-duplicated by event ID across requests, so a webhook that
+        retries the same batch does not create duplicate alerts.
+        """
+
+        if not ingest_enabled:
+            raise HTTPException(
+                status_code=403,
+                detail="ingest endpoint disabled; start the server with --allow-ingest",
+            )
+
+        records = extract_records(body)
+        if not records:
+            raise HTTPException(
+                status_code=400, detail="no event records found in request body"
+            )
+        if len(records) > MAX_INGEST_RECORDS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"batch too large; send at most {MAX_INGEST_RECORDS} records",
+            )
+
+        processor = app.state.stream_processor
+        if processor is None:
+            processor = StreamProcessor(alerts_store, settings)
+            app.state.stream_processor = processor
+
+        alerts = processor.feed(records)
+        return {
+            "status": "ok",
+            "received": len(records),
+            "alerts": len(alerts),
+            "findings": [
+                {
+                    "detector": alert.detector,
+                    "severity": alert.severity.value,
+                    "title": alert.title,
+                    "entity": alert.entity,
+                    "event_count": alert.event_count,
+                    "last_seen": to_iso(alert.last_seen),
+                }
+                for alert in alerts
+            ],
+            "stats": processor.stats.to_dict(),
         }
 
     return app

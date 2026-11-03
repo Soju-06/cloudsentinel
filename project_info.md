@@ -2,8 +2,9 @@
 
 ## Overview
 CloudSentinel is a Python cloud-security monitoring and threat-detection lab.
-It ingests cloud audit logs, normalises them into a vendor-neutral schema, runs
-nine detection engines, persists de-duplicated alerts in SQLite, supports
+It ingests cloud audit logs (batch files, a watched directory or pushed
+webhook records), normalises them into a vendor-neutral schema, runs nine
+detection engines, persists de-duplicated alerts in SQLite, supports
 acknowledge/assign/close triage, and presents them in a futuristic Streamlit
 console with CSV/JSON/HTML/PDF reporting and Slack/webhook/email notifications. A FastAPI service exposes the same alert
 store to native Flutter clients: a sideloadable Android APK and a portable
@@ -22,6 +23,8 @@ automated tests and first-class AWS CloudTrail support.
 - Detect MFA removal, root-account use and long-lived access-key creation.
 - Flag security groups with ingress open to `0.0.0.0/0` or `::/0`.
 - Detect CloudTrail logging stopped, deleted or re-scoped.
+- Near-real-time detection: poll a directory (`watch`) or push records to
+  `POST /api/ingest`, with a rolling window and cross-batch de-duplication.
 - Display alerts with severity levels in a Streamlit dashboard.
 - Triage alerts (acknowledge, assign, close, reopen) from the dashboard, CLI,
   REST API and mobile client; state survives rescans.
@@ -49,9 +52,13 @@ automated tests and first-class AWS CloudTrail support.
 
 ## Architecture
 ```
-data/raw/*.json|jsonl|csv|gz
-        │
-        ▼
+data/raw/*.json|jsonl|csv|gz        POST /api/ingest (pushed records)
+        │                                    │
+        └──────────┬─────────────────────────┘
+                   ▼
+   stream.py (watch/push: rolling window, content-hash de-duplication)
+                   │
+                   ▼
    ingest.py (format detection, gzip, CloudTrail/CloudWatch adapter,
               duplicate-ID suppression)
         │  canonical event DataFrame
@@ -127,7 +134,7 @@ python -m cloudsentinel tokens revoke phone
 python -m cloudsentinel triage 12 --status acknowledged --assignee analyst@example.com
 python -m cloudsentinel triage 12 --status closed
 streamlit run cloudsentinel/dashboard.py  # console
-python -m pytest                          # 254 tests (1 skipped)
+python -m pytest                          # 275 tests (1 skipped)
 python scripts/benchmark.py --events 100000
 ```
 
@@ -141,16 +148,17 @@ python scripts/benchmark.py --events 100000
   send-alerts action, open-alert count.
 
 ## Test suite
-254 pytest tests (1 skipped on Windows) covering ingestion (JSON/JSONL/CSV/gzip/
+275 pytest tests (1 skipped on Windows) covering ingestion (JSON/JSONL/CSV/gzip/
 CloudTrail/CloudWatch Logs), duplicate IDs, corrupt records, timezone handling,
 detector boundaries and severity matrices, cross-IP correlation, impossible
 travel, MFA/root/access-key/security-group/CloudTrail-tampering rules, SQLite
-merge/suppression behaviour, report shapes (including PDF magic bytes),
-notification transports, configuration, CLI round trips, REST API
-auth/filters/pagination/scan gating, API hardening (token rotation, rate limits,
-CORS, security headers, TLS flags, certificate SANs), triage transitions,
-in-place database migration, rescan persistence, triage API/status filters and
-end-to-end sample data.
+merge/suppression behaviour, streaming batches (rolling window, ID/content
+de-duplication, directory polling, ingest gating), report shapes (including PDF
+magic bytes), notification transports, configuration, CLI round trips, REST API
+auth/filters/pagination/scan/ingest gating, API hardening (token rotation, rate
+limits, CORS, security headers, TLS flags, certificate SANs), triage
+transitions, in-place database migration, rescan persistence, triage
+API/status filters and end-to-end sample data.
 A genuine AWS CloudWatch Logs subscription fixture lives in `tests/fixtures/`.
 
 The Flutter client adds 29 Dart tests (`flutter test`): URL normalisation,
@@ -298,6 +306,26 @@ reduced-motion fallback). `flutter analyze` reports no issues.
   `test_cloudtrail_tampering.py`) plus configuration, API metadata and
   end-to-end sample-data coverage.
 
+## Near-real-time ingestion (Phase 19)
+- `stream.py` — `StreamProcessor` keeps a rolling window of recent events
+  (default 60 minutes / 20 000 events) so window-based detectors keep context
+  between batches, de-duplicates by event ID (records without an ID get a
+  stable content hash) and persists only alerts the batch touched.
+- `DirectoryWatcher` polls a directory by mtime+size signature and reports new
+  or changed `.json/.jsonl/.ndjson/.csv/.gz` files; a restart replays the
+  backlog and record de-duplication makes the replay free.
+- `watch_directory` polls for a configurable interval (`watch` CLI: `--once`
+  for cron, optional `--notify`, live per-batch reporting).
+- `POST /api/ingest` accepts one record, an array, a CloudTrail `Records` dump
+  or a CloudWatch Logs payload; opt-in (`--allow-ingest`), token-guarded,
+  shares the scan rate limit, capped at 5 000 records per call and reports
+  accepted/alerts/lifetime counters in the response.
+- New `[stream]` config section: `window_minutes`, `max_events`,
+  `poll_seconds`.
+- Tests: `tests/test_stream.py` (context across batches, ID/content dedupe,
+  window pruning, buffer caps, watcher, watch loop) plus API ingest gating/
+  dedupe/batch-limit tests and `watch --once` CLI smoke tests.
+
 ## Design decisions
 - Generic-first schema keeps the detectors vendor-neutral.
 - CloudTrail adapter maps `eventName`, `errorCode`, `sourceIPAddress`,
@@ -322,7 +350,9 @@ reduced-motion fallback). `flutter analyze` reports no issues.
 - Token store and rate limiter are file-backed and per-process; multi-worker
   deployments would need a shared store and secret manager.
 - CloudTrail ingestion is file/export based, not a live event stream.
-- Detections are batch-only; there is no streaming, baselining or threat intel.
+- Streaming is per-process and in-memory: the rolling window and the
+  seen-event set do not survive a restart, and a durable queue
+  (SQS/Kafka) plus a shared buffer are still missing.
 - KMS key deletion, guardrail/SCP changes and VPC flow-log gaps are not yet
   covered; the detection set is event-name/parameter driven, not inventory-based.
 - Triage is intentionally minimal: status + assignee, with no comments, SLA
@@ -353,13 +383,13 @@ reduced-motion fallback). `flutter analyze` reports no issues.
     API, CLI and mobile client (Phase 17).
 12. ✅ Additional detections: MFA removal, root usage, access-key creation,
     open security groups and CloudTrail tampering (Phase 18).
-13. ⬜ Streaming / near-real-time ingestion (S3/SQS poller or EventBridge
-    webhook plus a watch mode).
+13. ✅ Streaming ingestion: directory `watch` mode and `POST /api/ingest`
+    webhook with a rolling detector window (Phase 19).
 14. ⬜ Per-user auth: OIDC for the console and scoped API identities.
 
 ## Project status
-Phases 0–18 complete and verified:
-- 253 Python tests passing (1 skipped on Windows); 29/29 Flutter tests passing
+Phases 0–19 complete and verified:
+- 274 Python tests passing (1 skipped on Windows); 29/29 Flutter tests passing
   and `flutter analyze` reports no issues (Flutter 3.47 / Dart 3.13).
 - Triage verified by tests: workflow transitions, in-place migration of a
   legacy database, persistence across rescans, PATCH auth/400/409/404 paths and
@@ -368,7 +398,7 @@ Phases 0–18 complete and verified:
   flat parameter shapes, grouping, config toggles and end-to-end sample data.
 - Demo dataset: 220 events → 20 alerts (13 critical, 7 high), all nine engines.
 - Dashboard headless run: 0 exceptions, 3 tabs, 3 actions, 4 export formats.
-- API verified live: `/health` reports version 0.5.0 and the alert count,
+- API verified live: `/health` reports version 0.6.0 and the alert count,
   tokenless `/api/summary` is rejected with 401, token requests return the
   summary, and `PATCH /api/alerts/{id}` drives triage (covered by tests).
 - Security verified live: HTTPS on 8443 with a generated certificate (health
