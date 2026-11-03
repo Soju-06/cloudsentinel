@@ -836,4 +836,4 @@ product. The honest gap list, roughly in value order:
 
 ## License
 
-Educational lab project. Use responsibly on logs you are authorised to analyse.
+MIT — see [LICENSE](LICENSE). The project itself is an educational lab; use responsibly on logs you are authorised to analyse.
