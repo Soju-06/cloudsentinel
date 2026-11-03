@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from cloudsentinel.api import create_app
 from cloudsentinel.db import AlertStore
 from cloudsentinel.severity import Severity
+from cloudsentinel.tokens import TokenStore
 
 TOKEN = "test-token"
 
@@ -292,3 +293,134 @@ def test_ingest_enforces_batch_limit(ingest_client, monkeypatch):
 def test_health_reports_ingest_flag(client, ingest_client):
     assert client.get("/health").json()["ingest_enabled"] is False
     assert ingest_client.get("/health").json()["ingest_enabled"] is True
+
+
+def _role_app(tmp_path, alerts):
+    store = AlertStore(tmp_path / "auth.db").init()
+    store.upsert_many(alerts, suppression_minutes=0)
+
+    tokens = TokenStore(tmp_path / "tokens.json")
+    plaintexts = {}
+    for role in ("admin", "analyst", "viewer"):
+        plaintexts[role], _ = tokens.add(label=f"{role}-token", role=role)
+
+    app = create_app(
+        db_path=tmp_path / "auth.db",
+        raw_dir=tmp_path / "raw",
+        token_store=tokens,
+        allow_scan=True,
+        allow_ingest=True,
+    )
+    return app, plaintexts
+
+
+@pytest.fixture
+def role_client(tmp_path, make_alert):
+    app, plaintexts = _role_app(
+        tmp_path,
+        [make_alert(severity=Severity.CRITICAL, entity="carol")],
+    )
+    with TestClient(app) as test_client:
+        yield test_client, plaintexts
+
+
+def test_every_role_can_read(role_client):
+    client, plaintexts = role_client
+
+    for token in plaintexts.values():
+        response = client.get("/api/summary", headers=_token_header(token))
+        assert response.status_code == 200
+
+
+def test_viewer_token_cannot_triage(role_client):
+    client, plaintexts = role_client
+    alert_id = client.get(
+        "/api/alerts", headers=_token_header(plaintexts["admin"])
+    ).json()["alerts"][0]["id"]
+
+    headers = _token_header(plaintexts["viewer"])
+    denied = client.patch(
+        f"/api/alerts/{alert_id}",
+        headers=headers,
+        json={"status": "acknowledged"},
+    )
+    assert denied.status_code == 403
+    assert "viewer" in denied.json()["detail"]
+
+    allowed = client.patch(
+        f"/api/alerts/{alert_id}",
+        headers=_token_header(plaintexts["analyst"]),
+        json={"status": "acknowledged"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "acknowledged"
+
+
+def test_scan_and_ingest_require_admin(role_client, tmp_path):
+    client, plaintexts = role_client
+    (tmp_path / "raw").mkdir(exist_ok=True)
+
+    scan = client.post("/api/scan", headers=_token_header(plaintexts["analyst"]))
+    assert scan.status_code == 403
+
+    ingest = client.post(
+        "/api/ingest",
+        headers=_token_header(plaintexts["viewer"]),
+        json={"Records": []},
+    )
+    assert ingest.status_code == 403
+
+    records = [
+        {
+            "eventVersion": "1.09",
+            "eventID": f"role-{index}",
+            "eventTime": f"2026-06-01T10:0{index}:00Z",
+            "eventSource": "s3.amazonaws.com",
+            "eventName": "ListBucket",
+            "awsRegion": "us-east-1",
+            "sourceIPAddress": "10.0.0.5",
+            "userIdentity": {"type": "IAMUser", "userName": "carol"},
+        }
+        for index in range(3)
+    ]
+    ingest = client.post(
+        "/api/ingest",
+        headers=_token_header(plaintexts["admin"]),
+        json={"Records": records},
+    )
+    assert ingest.status_code == 200
+    assert ingest.json()["received"] == 3
+
+
+def test_auth_me_returns_token_identity(role_client):
+    client, plaintexts = role_client
+
+    response = client.get(
+        "/api/auth/me", headers=_token_header(plaintexts["analyst"])
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["name"] == "analyst-token"
+    assert payload["role"] == "analyst"
+    assert payload["source"] == "token"
+    assert "triage" in payload["capabilities"]
+    assert "admin" not in payload["capabilities"]
+
+    denied = client.get("/api/auth/me", headers=_token_header("wrong"))
+    assert denied.status_code == 401
+
+
+def test_token_store_configures_auth(role_client):
+    client, _ = role_client
+
+    health = client.get("/health").json()
+    assert health["auth_required"] is True
+    assert health["auth_mode"] == "token-store"
+
+    missing = client.get("/api/summary")
+    assert missing.status_code == 401
+
+
+def _token_header(token: str) -> dict[str, str]:
+    return {"X-API-Token": token}

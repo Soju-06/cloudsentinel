@@ -25,6 +25,8 @@ automated tests and first-class AWS CloudTrail support.
 - Detect CloudTrail logging stopped, deleted or re-scoped.
 - Near-real-time detection: poll a directory (`watch`) or push records to
   `POST /api/ingest`, with a rolling window and cross-batch de-duplication.
+- Per-user access control: local console accounts (PBKDF2) and role-scoped API
+  tokens (`viewer` / `analyst` / `admin`) enforced across console, API and CLI.
 - Display alerts with severity levels in a Streamlit dashboard.
 - Triage alerts (acknowledge, assign, close, reopen) from the dashboard, CLI,
   REST API and mobile client; state survives rescans.
@@ -134,7 +136,7 @@ python -m cloudsentinel tokens revoke phone
 python -m cloudsentinel triage 12 --status acknowledged --assignee analyst@example.com
 python -m cloudsentinel triage 12 --status closed
 streamlit run cloudsentinel/dashboard.py  # console
-python -m pytest                          # 275 tests (1 skipped)
+python -m pytest                          # 303 tests (1 skipped)
 python scripts/benchmark.py --events 100000
 ```
 
@@ -148,7 +150,7 @@ python scripts/benchmark.py --events 100000
   send-alerts action, open-alert count.
 
 ## Test suite
-275 pytest tests (1 skipped on Windows) covering ingestion (JSON/JSONL/CSV/gzip/
+303 pytest tests (1 skipped on Windows) covering ingestion (JSON/JSONL/CSV/gzip/
 CloudTrail/CloudWatch Logs), duplicate IDs, corrupt records, timezone handling,
 detector boundaries and severity matrices, cross-IP correlation, impossible
 travel, MFA/root/access-key/security-group/CloudTrail-tampering rules, SQLite
@@ -156,9 +158,11 @@ merge/suppression behaviour, streaming batches (rolling window, ID/content
 de-duplication, directory polling, ingest gating), report shapes (including PDF
 magic bytes), notification transports, configuration, CLI round trips, REST API
 auth/filters/pagination/scan/ingest gating, API hardening (token rotation, rate
-limits, CORS, security headers, TLS flags, certificate SANs), triage
-transitions, in-place database migration, rescan persistence, triage
-API/status filters and end-to-end sample data.
+limits, CORS, security headers, TLS flags, certificate SANs), the role
+capability matrix and `/api/auth/me`, console-account hashing and the
+Streamlit login gate (app-test), triage transitions, in-place database
+migration, rescan persistence, triage API/status filters and end-to-end
+sample data.
 A genuine AWS CloudWatch Logs subscription fixture lives in `tests/fixtures/`.
 
 The Flutter client adds 29 Dart tests (`flutter test`): URL normalisation,
@@ -326,6 +330,35 @@ reduced-motion fallback). `flutter analyze` reports no issues.
   window pruning, buffer caps, watcher, watch loop) plus API ingest gating/
   dedupe/batch-limit tests and `watch --once` CLI smoke tests.
 
+## Per-user auth and roles (Phase 20)
+- `auth.py` — the shared identity model: `viewer` < `analyst` < `admin` roles
+  with inherited capabilities and one `Principal` abstraction used by both the
+  API and the console. A deployment with no credentials at all keeps the
+  historic trusted-localhost behaviour: the anonymous principal stays `admin`.
+- `accounts.py` — file-backed console account store: PBKDF2-HMAC-SHA256
+  (200 000 iterations, 16-byte salt), constant-time verification with timing
+  parity for unknown users, username/password rules, `data/console_users.json`
+  (override with `CLOUDSENTINEL_USERS_FILE`, gitignored).
+- Role-scoped tokens: `tokens add --role viewer` (default `analyst`; token
+  files from before Phase 20 map to `analyst`; the `--token` bootstrap stays
+  `admin`). Token listings show a `ROLE` column.
+- API: a capability guard per endpoint (read = any role, `PATCH` triage =
+  analyst+, `POST /api/scan` and `/api/ingest` = admin) and the
+  `GET /api/auth/me` identity endpoint returning name, role, source and
+  capabilities.
+- Console: a sign-in gate once any account exists (stays open with a warning
+  card otherwise), sidebar identity card with sign-out, and role-gated UI
+  (viewer = read-only card, analyst = triage console, admin = scan/demo/notify
+  buttons).
+- CLI: `users add|list|setrole|remove` (password prompted and confirmed via
+  `getpass`, never echoed) plus the `tokens add --role` flag.
+- Tests: `tests/test_auth.py`, `tests/test_accounts.py`, `tests/test_dashboard.py`
+  (Streamlit AppTest: open console, login gate, role visibility), role-matrix
+  API tests (`role_client` fixture) and CLI round trips for `users`/tokens.
+- Verified live: `/health` reports version 0.7.0 with
+  `auth_mode=token-store`, tokenless `/api/summary` is rejected with 401 and
+  `GET /api/auth/me` returns `name=web, role=analyst, source=token`.
+
 ## Design decisions
 - Generic-first schema keeps the detectors vendor-neutral.
 - CloudTrail adapter maps `eventName`, `errorCode`, `sourceIPAddress`,
@@ -342,8 +375,10 @@ reduced-motion fallback). `flutter analyze` reports no issues.
 - **LOW / INFO** — reserved for future rules.
 
 ## Known limitations
-- The Streamlit dashboard is unauthenticated; the API uses shared tokens, not
-  per-user accounts. Neither is ready for public internet exposure.
+- The Streamlit dashboard is authenticated by local accounts (PBKDF2) and the
+  API accepts role-scoped tokens. Still missing: SSO/OIDC, password reset,
+  account lockout and a login rate limit for the console. Not ready for the
+  public internet.
 - Native TLS works for Windows/browsers, but Flutter's HTTP stack ignores the
   Android user CA store, so a self-signed certificate cannot secure the APK;
   phones need a publicly trusted certificate or a VPN.
@@ -385,11 +420,12 @@ reduced-motion fallback). `flutter analyze` reports no issues.
     open security groups and CloudTrail tampering (Phase 18).
 13. ✅ Streaming ingestion: directory `watch` mode and `POST /api/ingest`
     webhook with a rolling detector window (Phase 19).
-14. ⬜ Per-user auth: OIDC for the console and scoped API identities.
+14. ✅ Per-user auth, locally: console accounts plus role-scoped API tokens
+    (Phase 20); SSO/OIDC federation remains open.
 
 ## Project status
-Phases 0–19 complete and verified:
-- 274 Python tests passing (1 skipped on Windows); 29/29 Flutter tests passing
+Phases 0–20 complete and verified:
+- 302 Python tests passing (1 skipped on Windows); 29/29 Flutter tests passing
   and `flutter analyze` reports no issues (Flutter 3.47 / Dart 3.13).
 - Triage verified by tests: workflow transitions, in-place migration of a
   legacy database, persistence across rescans, PATCH auth/400/409/404 paths and
@@ -398,9 +434,12 @@ Phases 0–19 complete and verified:
   flat parameter shapes, grouping, config toggles and end-to-end sample data.
 - Demo dataset: 220 events → 20 alerts (13 critical, 7 high), all nine engines.
 - Dashboard headless run: 0 exceptions, 3 tabs, 3 actions, 4 export formats.
-- API verified live: `/health` reports version 0.6.0 and the alert count,
+- API verified live: `/health` reports version 0.7.0 and the alert count,
   tokenless `/api/summary` is rejected with 401, token requests return the
   summary, and `PATCH /api/alerts/{id}` drives triage (covered by tests).
+- Auth verified live (Phase 20): with a token store active `/api/summary`
+  without a token is 401 and `GET /api/auth/me` answers
+  `name=web, role=analyst, source=token` with its capability list.
 - Security verified live: HTTPS on 8443 with a generated certificate (health
   200, no token 401, `X-API-Token` 200, bearer 200, 6th request 429 with
   `retry-after: 60`); plain-HTTP LAN banner warns about unencrypted tokens.

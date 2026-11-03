@@ -13,14 +13,21 @@ Endpoints
 ``GET  /api/alerts/{id}`` one alert with evidence
 ``PATCH /api/alerts/{id}`` acknowledge / assign / close one alert
 ``GET  /api/detectors``   detector metadata for client filters
-``POST /api/scan``        re-scan the raw directory (opt-in)
-``POST /api/ingest``      accept pushed records near-real-time (opt-in)
+``GET  /api/auth/me``     who is this token and what may it do
+``POST /api/scan``        re-scan the raw directory (opt-in, admin role)
+``POST /api/ingest``      accept pushed records near-real-time (opt-in, admin)
 
 Authentication accepts a token in ``X-API-Token`` (legacy) or
 ``Authorization: Bearer``. Tokens come from two places: the bootstrap
-``--token`` value and the rotating token store (``python -m cloudsentinel
-tokens``). When neither is configured the API is open, which is only acceptable
-on a trusted localhost.
+``--token`` value (always ``admin``) and the rotating token store
+(``python -m cloudsentinel tokens``), whose tokens each carry a role:
+
+* ``viewer``  — read alerts, summary, detectors, exports via clients;
+* ``analyst`` — everything above plus triage updates (default);
+* ``admin``   — everything above plus ``POST /api/scan`` and ``/api/ingest``.
+
+When neither is configured the API is open, which is only acceptable
+on a trusted localhost (the anonymous caller stays full-access).
 
 Every ``/api/*`` request is rate limited per client/token and the API returns
 uniform JSON errors that never echo secrets or stack traces.
@@ -43,6 +50,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .adapters.cloudtrail import extract_records
+from .auth import ADMIN, TRIAGE, VIEW, Principal, open_principal
 from .config import Config
 from .db import AlertStore
 from .paths import DEFAULT_DB_PATH, RAW_DIR
@@ -230,24 +238,55 @@ def create_app(
             allow_headers=["*"],
         )
 
-    def authenticate(presented: str) -> bool:
+    def resolve_principal(presented: str) -> Principal | None:
+        """Map a presented token onto an identity, or ``None`` when unknown.
+
+        A deployment that configured neither a bootstrap token nor a token
+        store is a trusted local lab: the anonymous caller gets the ``open``
+        principal (full capabilities) so existing behaviour is preserved.
+        """
+
         if bootstrap_token and secrets_compare(presented, bootstrap_token):
-            return True
-        return bool(store_tokens and store_tokens.verify(presented))
+            return Principal("bootstrap", "admin", source="bootstrap")
+        record = store_tokens.verify_record(presented) if store_tokens else None
+        if record is not None:
+            return Principal(record.label, record.role, source="token")
+        if not auth_required:
+            return open_principal()
+        return None
 
-    def require_token(
-        x_api_token: Annotated[str | None, Header(alias="X-API-Token")] = None,
-        authorization: Annotated[str | None, Header()] = None,
-    ) -> None:
-        presented = extract_token(x_api_token, authorization)
-        if auth_required and not authenticate(presented):
-            raise HTTPException(
-                status_code=401,
-                detail="invalid or missing API token",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+    def require(capability: str):
+        """Build a dependency enforcing one capability on an endpoint."""
 
-    guarded = [Depends(require_token)]
+        def guard(
+            x_api_token: Annotated[str | None, Header(alias="X-API-Token")] = None,
+            authorization: Annotated[str | None, Header()] = None,
+        ) -> Principal:
+            presented = extract_token(x_api_token, authorization)
+            principal = resolve_principal(presented)
+            if principal is None:
+                raise HTTPException(
+                    status_code=401,
+                    detail="invalid or missing API token",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            if not principal.can(capability):
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"token role '{principal.role}' does not allow "
+                        f"'{capability}'; issue a token with --role admin"
+                        if capability == ADMIN
+                        else f"token role '{principal.role}' does not allow '{capability}'"
+                    ),
+                )
+            return principal
+
+        return guard
+
+    guarded = [Depends(require(VIEW))]  # read-only endpoints (any role)
+    triager_guards = [Depends(require(TRIAGE))]
+    admin_guards = [Depends(require(ADMIN))]
 
     @app.middleware("http")
     async def security_guard(request: Request, call_next):
@@ -369,7 +408,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="alert not found")
         return alert.to_dict()
 
-    @app.patch("/api/alerts/{alert_id}", dependencies=guarded, tags=["alerts"])
+    @app.patch("/api/alerts/{alert_id}", dependencies=triager_guards, tags=["alerts"])
     def api_triage(alert_id: int, payload: TriageUpdate) -> dict[str, Any]:
         if not payload.model_fields_set:
             raise HTTPException(
@@ -406,7 +445,12 @@ def create_app(
             "statuses": list(STATUSES),
         }
 
-    @app.post("/api/scan", dependencies=guarded, tags=["scan"])
+    @app.get("/api/auth/me", dependencies=guarded, tags=["meta"])
+    def api_me(principal: Principal = Depends(require(VIEW))) -> dict[str, Any]:
+        """Who is this token, and what may it do?"""
+        return principal.to_dict()
+
+    @app.post("/api/scan", dependencies=admin_guards, tags=["scan"])
     def api_scan(reset: bool = False) -> dict[str, Any]:
         if not scan_enabled:
             raise HTTPException(
@@ -432,7 +476,7 @@ def create_app(
             "files": result.files,
         }
 
-    @app.post("/api/ingest", dependencies=guarded, tags=["scan"])
+    @app.post("/api/ingest", dependencies=admin_guards, tags=["scan"])
     def api_ingest(body: Any = Body(...)) -> dict[str, Any]:
         """Accept pushed audit records and run detections immediately.
 

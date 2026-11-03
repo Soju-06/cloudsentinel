@@ -39,6 +39,10 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
   `POST /api/ingest` accepts pushed records (an EventBridge rule or a log
   shipper). A rolling in-memory window keeps window-based detectors working,
   and records are de-duplicated by event ID across batches.
+- **Per-user auth** — local console accounts (PBKDF2-hashed passwords) gate the
+  Streamlit sign-in, and every API token carries a role: `viewer` (read-only),
+  `analyst` (read + triage) or `admin` (+ scan/ingest). `GET /api/auth/me`
+  reports the caller's identity.
 - **Hybrid storage** — raw events stay in files (`data/raw/`); only alerts are
   persisted in SQLite for history, filtering and de-duplication.
 - **Alert triage** — acknowledge, assign, close and reopen alerts from the
@@ -69,7 +73,7 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 - **Futuristic console** — dark glassmorphism theme, neon severity badges,
   Plotly charts, top-risk entities and one-click exports.
 - **Docker** — `Dockerfile` + `docker-compose.yml` for a reproducible console.
-- **275 automated Python tests** (274 pass, 1 skipped on Windows) plus
+- **303 automated Python tests** (302 pass, 1 skipped on Windows) plus
   **29 Flutter tests** covering ingestion, every detector, storage, reporting,
   notifications, configuration, CLI, API auth/rotation/rate limits/TLS,
   triage and status transitions, hardening scenarios, the Dart API client and
@@ -261,7 +265,8 @@ python -m cloudsentinel demo [-o RAW_DIR] [--seed N]
 python -m cloudsentinel serve [--host H] [--port P] [--token T] [--allow-scan]
                               [--allow-ingest] [--tls-cert PEM --tls-key PEM]
                               [--rate-limit N] [--token-file PATH] [--cors ORIGINS]
-python -m cloudsentinel tokens add|list|revoke [--label L] [--token-file PATH]
+python -m cloudsentinel tokens add|list|revoke [--label L] [--role ROLE] [--token-file PATH]
+python -m cloudsentinel users add|list|setrole|remove [--role ROLE]
 ```
 
 Examples:
@@ -360,21 +365,36 @@ python -m cloudsentinel serve --host 0.0.0.0 --port 8443 --token YOUR_TOKEN `
 | `GET /api/summary` | token | totals by severity/detector/status, entities, DB stats |
 | `GET /api/alerts` | token | filtered/paginated alerts (`severity`, `detector`, `status`, `search`, `since`, `until`, `limit`, `offset`) |
 | `GET /api/alerts/{id}` | token | one alert including evidence |
-| `PATCH /api/alerts/{id}` | token | triage: `{"status": "...", "assignee": "..."}` (null clears the assignee) |
+| `PATCH /api/alerts/{id}` | analyst+ | triage: `{"status": "...", "assignee": "..."}` (null clears the assignee) |
 | `GET /api/detectors` | token | detector labels and workflow statuses for client chips |
-| `POST /api/scan` | token | re-scan `data/raw` (only with `--allow-scan`) |
-| `POST /api/ingest` | token | accept pushed records and detect immediately (only with `--allow-ingest`) |
+| `GET /api/auth/me` | token | caller identity: name, role, source and capabilities |
+| `POST /api/scan` | admin | re-scan `data/raw` (only with `--allow-scan`) |
+| `POST /api/ingest` | admin | accept pushed records and detect immediately (only with `--allow-ingest`) |
 
 **Authentication.** Send the token as `X-API-Token: <token>` or
-`Authorization: Bearer <token>`. `--token` is the bootstrap value; for anything
-longer-lived use the rotating store, which keeps only salted SHA-256
-fingerprints:
+`Authorization: Bearer <token>`. `--token` is the bootstrap value (role
+`admin`); for anything longer-lived use the rotating store, which keeps only
+salted SHA-256 fingerprints. Every token carries a role:
+
+| Role | Allows |
+|---|---|
+| `viewer` | read the feed, summary, detectors and exports — no triage |
+| `analyst` | viewer + triage updates (the default role for new tokens) |
+| `admin` | analyst + `POST /api/scan` and `/api/ingest` |
+
+Tokens created before this feature map to `analyst`; re-issue one with
+`tokens add --role admin` for a client that needs remote scan/ingest.
 
 ```powershell
-python -m cloudsentinel tokens add --label phone   # printed once
-python -m cloudsentinel tokens list                # labels + fingerprints
-python -m cloudsentinel tokens revoke phone        # effective next request
+python -m cloudsentinel tokens add --label phone              # printed once
+python -m cloudsentinel tokens add --label ci --role viewer   # read-only client
+python -m cloudsentinel tokens list                           # labels, roles + fingerprints
+python -m cloudsentinel tokens revoke phone                   # effective next request
 ```
+
+`GET /api/auth/me` answers "who is this token?" — name, role, source and
+capability list — handy for a client UI or for verifying a token after a
+handover.
 
 **Triage.** Alerts move through `open → acknowledged → closed → open`
 (reopening). Assigning an open alert acknowledges it implicitly; send
@@ -563,7 +583,8 @@ python -m cloudsentinel scan -c my-config.toml
 
 Environment overrides: `CLOUDSENTINEL_DATA`, `CLOUDSENTINEL_RAW`,
 `CLOUDSENTINEL_DB`, `CLOUDSENTINEL_REPORTS`, `CLOUDSENTINEL_API_TOKEN`,
-`CLOUDSENTINEL_API_ALLOW_SCAN`, plus secret-friendly
+`CLOUDSENTINEL_API_ALLOW_SCAN`, `CLOUDSENTINEL_API_ALLOW_INGEST`,
+`CLOUDSENTINEL_USERS_FILE` (console account store), plus secret-friendly
 `CLOUDSENTINEL_SLACK_WEBHOOK`, `CLOUDSENTINEL_WEBHOOK_URL`,
 `CLOUDSENTINEL_SMTP_PASSWORD`, `CLOUDSENTINEL_SMTP_HOST`,
 `CLOUDSENTINEL_SMTP_USERNAME`, `CLOUDSENTINEL_EMAIL_FROM`,
@@ -582,6 +603,12 @@ Environment overrides: `CLOUDSENTINEL_DATA`, `CLOUDSENTINEL_RAW`,
 - **EXPORTS** — one-click CSV, JSON, HTML and PDF downloads plus a JSON summary.
 - Sidebar: severity/detector filters, time window, free-text search, on-demand
   detection scan, demo loader, "send alerts" action and system status.
+- **Access control** — the console follows the API's opt-in posture: with no
+  accounts configured it stays open (a warning card explains it) for local use;
+  once `python -m cloudsentinel users add` creates an account, a sign-in gate
+  protects every page. Roles mirror the API — viewers get a read-only feed,
+  analysts get the triage console, admins keep the scan/demo/notify buttons —
+  and the sidebar shows the signed-in identity with a sign-out button.
 
 ---
 
@@ -615,8 +642,10 @@ dicts instead of `iterrows`.
 ```
 cloudsentinel/
 ├── cloudsentinel/
+│   ├── accounts.py               # console account store (PBKDF2 hashes)
 │   ├── adapters/cloudtrail.py   # CloudTrail + CloudWatch Logs → generic schema
 │   ├── api.py                   # FastAPI service for the mobile client
+│   ├── auth.py                  # roles, capabilities and principals
 │   ├── detectors/               # brute force, travel, storage, IAM, identity,
 │   │                            #   security groups, CloudTrail tampering
 │   ├── cli.py                   # scan / watch / report / notify / serve / triage
@@ -633,7 +662,7 @@ cloudsentinel/
 │   ├── sampledata.py            # deterministic incident dataset
 │   ├── severity.py              # CRITICAL/HIGH/MEDIUM/LOW/INFO
 │   ├── stream.py                # rolling-window streaming ingestion
-│   ├── tokens.py                # rotating API token store (salted hashes)
+│   ├── tokens.py                # rotating role-scoped API token store
 │   └── utils.py                 # timestamp + JSON helpers
 ├── mobile/cloudsentinel_mobile/ # native Flutter client (Android + web)
 │   ├── lib/api.dart             # typed API client + models
@@ -654,7 +683,7 @@ cloudsentinel/
 ├── scripts/benchmark.py         # 100k-event performance harness
 ├── scripts/generate_sample_data.py
 ├── scripts/make_dev_cert.py      # self-signed TLS certificate generator
-├── tests/                       # 275 pytest tests + real AWS fixture
+├── tests/                       # 303 pytest tests + real AWS fixture
 ├── Dockerfile
 ├── docker-compose.yml
 ├── cloudsentinel.example.toml
@@ -669,7 +698,7 @@ cloudsentinel/
 python -m pytest
 ```
 
-275 Python tests (1 skipped on Windows) covering:
+303 Python tests (1 skipped on Windows) covering:
 
 - generic JSON / JSONL / CSV, gzip, CloudTrail `Records` and CloudWatch Logs
   wrappers (including a genuine AWS subscription fixture)
@@ -695,9 +724,16 @@ python -m pytest
 - configuration loading, CLI round trips and end-to-end sample data
 - REST API token auth, summary/list/detail shapes, filtering, pagination,
   invalid timestamps, scan gating and OpenAPI docs
+- Role model: viewer/analyst/admin capability matrix, the token `--role` flag,
+  role-scoped enforcement (`403` denials for read-only/analyst tokens) and the
+  `GET /api/auth/me` identity endpoint
 - API hardening: bootstrap + rotating tokens, constant-time verification, revoke
   semantics, bearer auth, loopback CORS, security headers, uniform `422`/`429`
   errors, per-client rate limits, TLS flags and certificate SANs
+- Console accounts and gate (Streamlit AppTest): the console is open when no
+  accounts exist, shows a login screen when they do, and switches the sidebar
+  actions and triage console by role; the AccountStore itself is covered
+  (PBKDF2 hashing, validation, duplicate rejection, timing parity)
 
 Flutter client:
 
@@ -740,8 +776,11 @@ This is a strong portfolio/lab project, but it is **not** a finished commercial
 product. The honest gap list, roughly in value order:
 
 **Security & operations**
-- The Streamlit dashboard has no login; the API uses shared tokens, not
-  users/roles. Add OIDC or per-user API keys before exposing either publicly.
+- Per-user auth exists now — local console accounts (PBKDF2) and role-scoped
+  API tokens — but there is no SSO/OIDC, no password reset flow, no account
+  lockout and no login rate limit on the dashboard; the triage `assignee` is
+  still a free-form label, not an authenticated persona. Neither surface is
+  ready for public internet exposure.
 - TLS is available natively for Windows/browsers, but the Android app cannot
   trust a self-signed CA (Flutter ignores the user store); a publicly trusted
   certificate or a VPN is still needed for phones on untrusted networks.
@@ -779,13 +818,13 @@ product. The honest gap list, roughly in value order:
 - No infrastructure-as-code, no schema/versioning policy for stored evidence.
 
 **Suggested next three features** (highest impact for effort):
-1. **Per-user auth** — OIDC for the console and scoped API keys; TLS, token
-   rotation and triage are already in place, identity is the remaining gate
-   for a shared environment.
-2. **CI and a shared backend** — GitHub Actions, a coverage gate and Postgres
+1. **CI and a shared backend** — GitHub Actions, a coverage gate and Postgres
    so multiple analysts can use one deployment safely.
-3. **Durable streaming** — SQS/Kafka consumer plus a shared buffer so the
+2. **Durable streaming** — SQS/Kafka consumer plus a shared buffer so the
    rolling window survives restarts and scales beyond one worker.
+3. **SSO for the console and API** — OAuth/OIDC on top of the existing
+   role model, so analysts reuse a corporate identity provider instead of
+   local accounts for a shared deployment.
 
 ---
 

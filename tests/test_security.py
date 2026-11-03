@@ -95,6 +95,7 @@ def test_listing_never_exposes_digests(tmp_path):
         "revoked",
         "last_used",
         "active",
+        "role",
     }
     assert len(listing["fingerprint"]) == 8
 
@@ -497,3 +498,36 @@ def test_certificate_days_are_validated(tmp_path):
         build_certificate(days=0)
     with pytest.raises(ValueError):
         build_certificate(days=4000)
+
+
+def test_legacy_tokens_map_to_analyst(tmp_path):
+    path = tmp_path / "legacy.json"
+    store = TokenStore(path)
+    plaintext, _ = store.add(label="legacy")
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for item in data["tokens"]:
+        item.pop("role", None)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data), encoding="utf-8")
+    temporary.replace(path)
+
+    reloaded = TokenStore(path)
+    record = reloaded.verify_record(plaintext)
+    assert record is not None
+    assert record.role == "analyst"
+    assert reloaded.listing()[0]["role"] == "analyst"
+
+
+def test_tokens_carry_roles(tmp_path):
+    store = TokenStore(tmp_path / "roles.json")
+
+    admin_plain, admin = store.add(label="ci", role="admin")
+    viewer_plain, viewer = store.add(label="report", role="viewer")
+
+    matched_admin = store.verify_record(admin_plain)
+    matched_viewer = store.verify_record(viewer_plain)
+
+    assert matched_admin is not None and matched_admin.role == "admin"
+    assert matched_viewer is not None and matched_viewer.role == "viewer"
+    assert store.verify_record(admin_plain + "x") is None

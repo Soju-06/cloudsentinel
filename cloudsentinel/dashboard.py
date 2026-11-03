@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -20,6 +21,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:  # allow `streamlit run cloudsentinel/dashboard.py`
     sys.path.insert(0, str(_ROOT))
 
+from cloudsentinel.accounts import AccountStore  # noqa: E402
+from cloudsentinel.auth import ADMIN, TRIAGE, Principal, open_principal  # noqa: E402
 from cloudsentinel.config import Config  # noqa: E402
 from cloudsentinel.db import AlertStore  # noqa: E402
 from cloudsentinel.notify import notify_alerts  # noqa: E402
@@ -97,6 +100,13 @@ CSS = """
 }
 
 html, body, [class*="css"], .stApp { font-family: 'Inter', system-ui, sans-serif; }
+
+.login-hint {
+    font-family: 'Share Tech Mono', monospace;
+    color: var(--muted);
+    padding: 0.4rem 0 1rem 0;
+    letter-spacing: 0.04em;
+}
 
 .stApp {
     background:
@@ -388,9 +398,102 @@ def inject_css() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
 
 
+def _store_path() -> Path:
+    """Resolve the alert database at run time so tests can redirect it."""
+
+    return Path(os.environ.get("CLOUDSENTINEL_DB") or DEFAULT_DB_PATH)
+
+
+# ------------------------------------------------------------------- accounts
+
+
+def _console_principal() -> Principal:
+    """Resolve the signed-in console user, rendering the login gate if needed.
+
+    Consistent with the API's opt-in posture: when no console accounts have
+    been created the console stays open and reports the gap in the sidebar.
+    """
+
+    accounts = AccountStore()
+    if accounts.count() == 0:
+        return open_principal()
+
+    stored = st.session_state.get("principal")
+    if isinstance(stored, Principal):
+        return stored
+
+    _render_login(accounts)
+    st.stop()
+
+
+def _render_login(accounts: AccountStore) -> None:
+    """Full-screen sign-in gate marking the end of the script run."""
+
+    st.markdown(
+        '<div class="side-brand">CLOUDSENTINEL</div>'
+        '<div class="side-sub">// ACCESS CONTROL</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="login-hint">Sign in to the security console. Accounts are'
+        " managed with <code>python -m cloudsentinel users add</code>.</div>",
+        unsafe_allow_html=True,
+    )
+
+    with st.form("console_login"):
+        username = st.text_input("Username", autocomplete="username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("SIGN IN", type="primary")
+
+    if not submitted:
+        return
+    if not username.strip() or not password:
+        st.error("Enter a username and a password.")
+        return
+
+    account = None
+    try:
+        account = accounts.authenticate(username.strip(), password)
+    except Exception:  # noqa: BLE001 - never leak store internals to the UI
+        account = None
+    if account is None:
+        st.error("Invalid username or password.")
+        return
+
+    st.session_state["principal"] = Principal(
+        account.username, account.role, source="account"
+    )
+    st.rerun()
+
+
+def _render_session(principal: Principal) -> None:
+    """Signed-in card plus sign-out in the sidebar (before the actions)."""
+
+    if principal.source == "open":
+        st.markdown(
+            '<div class="sys-card">CONSOLE <b>OPEN</b><br>'
+            "no accounts configured - run<br>"
+            "<code>users add NAME --role admin</code> to lock it.</div>",
+            unsafe_allow_html=True,
+        )
+        return
+    if st.button("SIGN OUT"):
+        st.session_state.pop("principal", None)
+        st.rerun()
+    st.markdown(
+        '<div class="sys-card">SIGNED IN <b>'
+        + html.escape(principal.name)
+        + "</b><br>ROLE <b>"
+        + principal.role.upper()
+        + "</b></div>",
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
     inject_css()
-    store = AlertStore(DEFAULT_DB_PATH).init()
+    principal = _console_principal()
+    store = AlertStore(_store_path()).init()
 
     with st.sidebar:
         st.markdown(
@@ -398,15 +501,23 @@ def main() -> None:
             '<div class="side-sub">// SECURITY OPERATIONS</div>',
             unsafe_allow_html=True,
         )
+        _render_session(principal)
 
-        if st.button("⚡ RUN DETECTION SCAN", type="primary"):
-            _run_scan(store)
+        if principal.can(ADMIN):
+            if st.button("⚡ RUN DETECTION SCAN", type="primary"):
+                _run_scan(store)
 
-        if st.button("◈ LOAD DEMO TELEMETRY"):
-            _load_demo(store)
+            if st.button("◈ LOAD DEMO TELEMETRY"):
+                _load_demo(store)
 
-        if st.button("✉ SEND ALERTS"):
-            _send_notifications(store)
+            if st.button("✉ SEND ALERTS"):
+                _send_notifications(store)
+        else:
+            st.markdown(
+                '<div class="sys-card">READ-ONLY SESSION<br>'
+                "scanning and alert delivery need the admin role.</div>",
+                unsafe_allow_html=True,
+            )
 
         st.markdown('<div class="side-section">FILTERS</div>', unsafe_allow_html=True)
         severities = st.multiselect(
@@ -445,7 +556,7 @@ def main() -> None:
         last_scan = store.last_scan_time() or "never"
         triage_stats = store.stats()
         st.markdown(
-            f'<div class="sys-card">DB <b>{html.escape(DEFAULT_DB_PATH.name)}</b><br>'
+            f'<div class="sys-card">DB <b>{html.escape(_store_path().name)}</b><br>'
             f'RAW FILES <b>{raw_files}</b><br>'
             f'LAST SCAN <b>{html.escape(last_scan)}</b><br>'
             f'ALERTS <b>{store.count()}</b><br>'
@@ -487,7 +598,7 @@ def main() -> None:
         _render_overview(frame)
 
     with feed_tab:
-        _render_feed(frame, store)
+        _render_feed(frame, store, can_triage=principal.can(TRIAGE))
 
     with export_tab:
         _render_exports(frame)
@@ -643,7 +754,9 @@ def _render_overview(frame: pd.DataFrame) -> None:
         st.markdown(_risk_list_html(frame), unsafe_allow_html=True)
 
 
-def _render_feed(frame: pd.DataFrame, store: AlertStore) -> None:
+def _render_feed(
+    frame: pd.DataFrame, store: AlertStore, *, can_triage: bool = False
+) -> None:
     subtitle = (
         f"{len(frame)} finding(s) — newest first · "
         f"showing up to 200 rows"
@@ -653,7 +766,8 @@ def _render_feed(frame: pd.DataFrame, store: AlertStore) -> None:
         unsafe_allow_html=True,
     )
     st.markdown(_feed_html(frame), unsafe_allow_html=True)
-    _render_triage_console(frame, store)
+    if can_triage:
+        _render_triage_console(frame, store)
 
 
 def _render_triage_console(frame: pd.DataFrame, store: AlertStore) -> None:

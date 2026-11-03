@@ -53,12 +53,14 @@ Two rules are enforced in code rather than documented as advice:
 | Error messages leak paths, tokens or stack traces | uniform handlers for `422`, `429`, `500`; details only in server logs |
 | Clickjacking / MIME sniffing against `/docs` | `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` |
 | Remote clients trigger repeated scans | scans get a stricter budget and are off by default |
+| A viewer token fires triage/scan requests | role-scoped tokens; over-capability calls get `403` with the reason |
+| A stolen laptop exposes console credentials | PBKDF2-HMAC-SHA256 (200 000 iterations, salted), constant-time verify |
 
 ### Out of scope (by design)
 
-- **User accounts.** There is one shared secret per client, not identities. Any
-  valid token can read every alert and its evidence, and can triage it; the
-  triage `assignee` is a free-form label, not an authenticated identity.
+- **User accounts.** Identities exist now, but they are local: no SSO/OIDC, no
+  password reset flow and no account lockout. The triage `assignee` is still a
+  free-form label, not an authenticated persona.
 - **Tamper-evident auditing.** Requests are logged by uvicorn to the console, not
   to an append-only audit trail; triage history keeps only the last decision.
 - **Multi-tenant isolation.** One database, one owner.
@@ -67,8 +69,10 @@ Two rules are enforced in code rather than documented as advice:
   access.
 - **Encryption at rest.** The SQLite database and the token store are plain
   files protected by your OS account. Use BitLocker/FileVault if that matters.
-- **The Streamlit console.** `dashboard.py` has no login at all; it is a local
-  analyst tool. Do not publish port 8501.
+- **The Streamlit console.** Until a console account exists, `dashboard.py`
+  stays open with a warning card (the same opt-in posture as `--token`). The
+  gate is then a local login form, not SSO. Either way, do not publish
+  port 8501.
 
 The rate limiter is **per process**. That is correct for the intended
 single-process deployment; running multiple uvicorn workers would require a
@@ -95,10 +99,11 @@ python -m cloudsentinel tokens add --label phone
 #   Xy7... (43 characters)
 
 python -m cloudsentinel tokens list
-# LABEL   FINGERPRINT  CREATED                STATE
-# phone   a1b2c3d4     2026-10-30T12:00:00Z   active
+# LABEL   FINGERPRINT  ROLE       CREATED                STATE
+# phone   a1b2c3d4     analyst    2026-10-30T12:00:00Z   active
 
 python -m cloudsentinel tokens revoke phone
+python -m cloudsentinel tokens add --label ci --role viewer
 ```
 
 - Tokens are 32 random bytes (`secrets.token_urlsafe`), printed **once**.
@@ -108,6 +113,11 @@ python -m cloudsentinel tokens revoke phone
   reveal which token matched.
 - `revoke` accepts a label, a label prefix or a fingerprint prefix, and applies
   on the **next request** — no restart.
+- Every token carries a **role** that scopes the whole API: `viewer` (read
+  only), `analyst` (read + triage, the default) or `admin` (+ `/api/scan` and
+  `/api/ingest`). Set it at creation with `--role`; it cannot be changed later
+  (make a new token and revoke the old one). Tokens from before Phase 20 map
+  to `analyst`. `GET /api/auth/me` reports the caller's identity.
 
 ### Rotation runbook
 
@@ -120,6 +130,26 @@ python -m cloudsentinel tokens revoke phone
 The store path can be moved with `--token-file` or `CLOUDSENTINEL_TOKEN_FILE`.
 Deleting the file removes stored tokens (and, with no `--token`, opens the API —
 do this only on localhost).
+
+### Console accounts
+
+The Streamlit console shares the token store's opt-in philosophy: with no
+accounts defined it stays open and warns in the sidebar. Define accounts to
+enable the sign-in gate:
+
+```powershell
+python -m cloudsentinel users add alice --role admin   # prompts for a password
+python -m cloudsentinel users list                     # no plaintext output
+python -m cloudsentinel users setrole alice analyst
+python -m cloudsentinel users remove alice
+```
+
+- Passwords are hashed with PBKDF2-HMAC-SHA256 (200 000 iterations, 16-byte
+  salt); only the hash is written to `data/console_users.json`
+  (`CLOUDSENTINEL_USERS_FILE` moves it; gitignored, owner-only mode on POSIX).
+- Unknown users and wrong passwords burn comparable hashing time, so response
+  timing cannot enumerate users; the UI never reveals store internals.
+- Console roles mirror API roles, which keeps one mental model for privileges.
 
 ---
 
@@ -197,7 +227,8 @@ Checklist before you type `--host 0.0.0.0`:
 - [ ] Windows Firewall allows Python on **Private** networks only.
 - [ ] TLS is configured if the Wi-Fi is not yours.
 - [ ] `--allow-scan` is off unless you need the in-app scan button.
-- [ ] The Streamlit console (8501) is not exposed.
+- [ ] The Streamlit console (8501) is not exposed, and a console account
+      exists (`users add`) so the sign-in gate is active.
 - [ ] `certs/` and `data/api_tokens.json` are outside version control.
 
 ### Response headers
@@ -217,6 +248,14 @@ curl.exe -i http://127.0.0.1:8080/api/summary
 
 # Valid token: 200
 curl.exe -i -H "X-API-Token: YOUR_TOKEN" http://127.0.0.1:8080/api/summary
+
+# Identity check: who is this token and what may it do?
+curl.exe -s -H "X-API-Token: YOUR_TOKEN" http://127.0.0.1:8080/api/auth/me
+
+# A viewer must not triage (403), and must tell you why
+curl.exe -i -X PATCH -H "X-API-Token: VIEWER_TOKEN" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"status\": \"closed\"}" http://127.0.0.1:8080/api/alerts/1
 
 # Health: 200, public, shows the posture
 curl.exe -s http://127.0.0.1:8080/health

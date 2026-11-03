@@ -150,3 +150,74 @@ def test_cli_watch_once(tmp_path, capsys):
 def test_cli_watch_rejects_missing_directory(tmp_path, capsys):
     assert main(["watch", "-i", str(tmp_path / "missing"), "-d", str(tmp_path / "a.db")]) == 2
     assert "input directory not found" in capsys.readouterr().out
+
+
+def test_cli_users_lifecycle(tmp_path, monkeypatch, capsys):
+    import getpass
+
+    users_file = tmp_path / "users.json"
+    monkeypatch.setenv("CLOUDSENTINEL_USERS_FILE", str(users_file))
+    monkeypatch.setattr(getpass, "getpass", lambda *a, **k: "sup3rsafe1")
+
+    assert main(["users", "add", "alice", "--role", "admin"]) == 0
+    output = capsys.readouterr().out
+    assert "Created console account 'alice' (role: admin)." in output
+    assert users_file.exists()
+    assert "sup3rsafe1" not in users_file.read_text(encoding="utf-8")
+
+    assert main(["users", "list"]) == 0
+    output = capsys.readouterr().out
+    assert "alice" in output
+    assert "admin" in output
+
+    assert main(["users", "setrole", "alice", "viewer"]) == 0
+    assert "to role: viewer." in capsys.readouterr().out
+
+    assert main(["users", "remove", "alice"]) == 0
+    assert "Removed console account 'alice'" in capsys.readouterr().out
+
+    # Unknown account twice: remove and setrole both fail cleanly.
+    assert main(["users", "remove", "alice"]) == 2
+    assert main(["users", "setrole", "ghost", "admin"]) == 2
+
+
+def test_cli_users_rejects_password_mismatch(tmp_path, monkeypatch, capsys):
+    import getpass
+
+    monkeypatch.setenv("CLOUDSENTINEL_USERS_FILE", str(tmp_path / "users.json"))
+    answers = iter(["sup3rsafe1", "sup3rsafe2"])
+    monkeypatch.setattr(getpass, "getpass", lambda *a, **k: next(answers))
+
+    assert main(["users", "add", "bob"]) == 2
+    assert "passwords do not match" in capsys.readouterr().out
+
+
+def test_cli_tokens_add_accepts_role(tmp_path, capsys):
+    from cloudsentinel.tokens import TokenStore
+
+    token_file = tmp_path / "tokens.json"
+
+    assert (
+        main(
+            [
+                "tokens",
+                "add",
+                "--label",
+                "phone",
+                "--role",
+                "viewer",
+                "--token-file",
+                str(token_file),
+            ]
+        )
+        == 0
+    )
+    assert "role       : viewer" in capsys.readouterr().out
+    assert TokenStore(token_file).listing()[0]["role"] == "viewer"
+
+    # Without --role the token defaults to analyst (triage-capable).
+    assert (
+        main(["tokens", "add", "--label", "ci", "--token-file", str(token_file)])
+        == 0
+    )
+    assert "role       : analyst" in capsys.readouterr().out

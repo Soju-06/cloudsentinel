@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .auth import ROLES
 from .config import Config
 from .db import AlertStore
 from .notify import notify_alerts
@@ -205,6 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
     token_add = token_actions.add_parser("add", help="create a token")
     token_add.add_argument("--label", default=None, help="human label, e.g. phone")
     token_add.add_argument("--token-file", default=None, help="token store path")
+    token_add.add_argument(
+        "--role",
+        choices=list(ROLES),
+        default=None,
+        help="capability pack: viewer (read-only), analyst (triage, default), admin (scan/ingest)",
+    )
 
     token_list = token_actions.add_parser("list", help="show stored tokens")
     token_list.add_argument("--token-file", default=None, help="token store path")
@@ -214,6 +221,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     token_revoke.add_argument("label", help="exact label, label prefix or digest prefix")
     token_revoke.add_argument("--token-file", default=None, help="token store path")
+
+    users = subparsers.add_parser(
+        "users", help="manage console accounts (Streamlit login)"
+    )
+    user_actions = users.add_subparsers(dest="user_action", required=True)
+
+    user_add = user_actions.add_parser("add", help="create a console account")
+    user_add.add_argument("username", help="3-32 letters/digits/._-")
+    user_add.add_argument(
+        "--role",
+        choices=list(ROLES),
+        default=None,
+        help="viewer | analyst (default) | admin",
+    )
+
+    user_list = user_actions.add_parser("list", help="show console accounts")
+
+    user_setrole = user_actions.add_parser("setrole", help="change a user's role")
+    user_setrole.add_argument("username", help="existing account name")
+    user_setrole.add_argument("role", choices=list(ROLES), help="new role")
+
+    user_remove = user_actions.add_parser("remove", help="delete a console account")
+    user_remove.add_argument("username", help="existing account name")
 
     return parser
 
@@ -241,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
         return _watch(args)
     if args.command == "tokens":
         return _tokens(args)
+    if args.command == "users":
+        return _users(args)
     if args.command == "triage":
         return _triage(args)
     return 1
@@ -578,7 +610,7 @@ def _tokens(args: argparse.Namespace) -> int:
 
     if args.token_action == "add":
         try:
-            plaintext, record = store.add(label=args.label)
+            plaintext, record = store.add(label=args.label, role=args.role)
         except TokenError as exc:
             print(f"error: {exc}")
             return 2
@@ -586,6 +618,7 @@ def _tokens(args: argparse.Namespace) -> int:
         print(f"  {plaintext}")
         print(f"  label      : {record.label}")
         print(f"  fingerprint: {record.digest[:8]}")
+        print(f"  role       : {record.role}")
         print(f"  store      : {store.path}")
         print()
         print("Clients send it as X-API-Token (or Authorization: Bearer <token>).")
@@ -598,12 +631,14 @@ def _tokens(args: argparse.Namespace) -> int:
             print("No tokens stored.")
             return 0
         state_width = 8
-        print(f"{'LABEL':<18} {'FINGERPRINT':<12} {'CREATED':<22} STATE")
+        print(
+            f"{'LABEL':<18} {'FINGERPRINT':<12} {'ROLE':<10} {'CREATED':<22} STATE"
+        )
         for item in items:
             state = "active" if item["active"] else "revoked"
             print(
                 f"{item['label']:<18} {item['fingerprint']:<12} "
-                f"{item['created']:<22} {state:<{state_width}}"
+                f"{item['role']:<10} {item['created']:<22} {state:<{state_width}}"
             )
         print(f"\nStore: {store.path}")
         return 0
@@ -616,6 +651,64 @@ def _tokens(args: argparse.Namespace) -> int:
             return 0
         print(f"No active token matched '{args.label}'.")
         return 1
+
+    return 2
+
+
+def _users(args: argparse.Namespace) -> int:
+    from .accounts import AccountError, AccountStore
+
+    store = AccountStore()
+
+    def fail(message: str) -> int:
+        print(f"error: {message}")
+        return 2
+
+    if args.user_action == "add":
+        import getpass
+
+        password = getpass.getpass(f"Password for '{args.username}': ")
+        confirm = getpass.getpass("Confirm password: ")
+        if password != confirm:
+            return fail("passwords do not match")
+        try:
+            record = store.add(args.username, password, args.role)
+        except AccountError as exc:
+            return fail(str(exc))
+        print(f"Created console account '{record.username}' (role: {record.role}).")
+        print(f"Store: {store.path}")
+        return 0
+
+    if args.user_action == "list":
+        items = store.listing()
+        if not items:
+            print("No console accounts. The dashboard is open until one exists.")
+            print(f"Store: {store.path}")
+            return 0
+        print(f"{'USER':<20} {'ROLE':<10} {'CREATED':<22} LAST LOGIN")
+        for item in items:
+            print(
+                f"{item['username']:<20} {item['role']:<10} "
+                f"{item['created']:<22} {item['last_login'] or 'never'}"
+            )
+        print(f"\nStore: {store.path}")
+        return 0
+
+    if args.user_action == "setrole":
+        try:
+            record = store.set_role(args.username, args.role)
+        except AccountError as exc:
+            return fail(str(exc))
+        except ValueError as exc:
+            return fail(str(exc))
+        print(f"Updated '{record.username}' to role: {record.role}.")
+        return 0
+
+    if args.user_action == "remove":
+        if store.remove(args.username):
+            print(f"Removed console account '{args.username}'.")
+            return 0
+        return fail(f"no account named '{args.username}'")
 
     return 2
 

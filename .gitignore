@@ -62,3 +62,5 @@ Thumbs.db
 certs/
 data/api_tokens.json
 data/api_tokens.json.tmp
+data/console_users.json
+data/console_users.json.tmp

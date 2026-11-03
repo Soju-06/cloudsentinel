@@ -9,7 +9,10 @@ store:
 * only a salted SHA-256 fingerprint is written to disk, never the token;
 * comparisons are constant-time (:mod:`hmac`);
 * ``revoke`` takes effect on the next request, so rotation needs no restart:
-  add a new token, switch clients over, revoke the old one.
+  add a new token, switch clients over, revoke the old one;
+* every token carries a role (``viewer`` / ``analyst`` / ``admin``) that
+  scopes what the API allows; tokens created before Phase 20 default to
+  ``analyst``, so re-issue one with ``--role admin`` for remote scans.
 
 The file lives next to the database (``data/api_tokens.json``) and is written
 atomically with the owner-only permission bit on POSIX systems.
@@ -26,6 +29,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .auth import normalize_role
 from .paths import DATA_DIR
 
 TOKEN_BYTES = 32
@@ -33,6 +37,13 @@ SALT_BYTES = 16
 DEFAULT_TOKEN_PATH = Path(
     os.environ.get("CLOUDSENTINEL_TOKEN_FILE", DATA_DIR / "api_tokens.json")
 )
+
+
+def _safe_role(role: Any) -> str:
+    try:
+        return normalize_role(role, "analyst")
+    except ValueError:
+        return "analyst"
 
 
 def _now() -> str:
@@ -53,6 +64,7 @@ class TokenRecord:
     created: str
     revoked: str | None = None
     last_used: str | None = None
+    role: str = "analyst"
 
     @property
     def active(self) -> bool:
@@ -67,6 +79,7 @@ class TokenRecord:
             "revoked": self.revoked,
             "last_used": self.last_used,
             "active": self.active,
+            "role": _safe_role(self.role),
         }
 
 
@@ -138,7 +151,12 @@ class TokenStore:
     def active_count(self) -> int:
         return sum(1 for record in self._records() if record.active)
 
-    def add(self, label: str | None = None, token: str | None = None) -> tuple[str, TokenRecord]:
+    def add(
+        self,
+        label: str | None = None,
+        token: str | None = None,
+        role: str | None = None,
+    ) -> tuple[str, TokenRecord]:
         """Create a token and return ``(plaintext, record)``; printed once."""
         records = self._records()
         name = (label or f"token-{len(records) + 1}").strip()
@@ -146,6 +164,7 @@ class TokenStore:
             raise TokenError("label must not be empty")
         if any(record.label == name for record in records):
             raise TokenError(f"label already exists: {name}")
+        role = normalize_role(role, "analyst")
 
         plaintext = token or secrets.token_urlsafe(TOKEN_BYTES)
         if len(plaintext) < 16:
@@ -155,6 +174,7 @@ class TokenStore:
             label=name,
             digest=self._fingerprint(plaintext),
             created=_now(),
+            role=role,
         )
         records.append(record)
         self._write_records(records)
@@ -185,8 +205,12 @@ class TokenStore:
 
     def verify(self, presented: str) -> bool:
         """Constant-time check against every active token."""
+        return self.verify_record(presented) is not None
+
+    def verify_record(self, presented: str) -> TokenRecord | None:
+        """Constant-time check returning the matching token record (role)."""
         if not presented:
-            return False
+            return None
 
         candidate = self._fingerprint(presented)
         matched_index: int | None = None
@@ -197,10 +221,10 @@ class TokenStore:
                 if hmac.compare_digest(candidate, record.digest):
                     matched_index = index
 
-        if matched_index is not None:
-            self._touch(matched_index)
-            return True
-        return False
+        if matched_index is None:
+            return None
+        self._touch(matched_index)
+        return records[matched_index]
 
     def _touch(self, index: int) -> None:
         """Record ``last_used`` at most twice a minute to avoid disk churn."""
