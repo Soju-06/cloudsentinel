@@ -355,7 +355,7 @@ reduced-motion fallback). `flutter analyze` reports no issues.
 - Tests: `tests/test_auth.py`, `tests/test_accounts.py`, `tests/test_dashboard.py`
   (Streamlit AppTest: open console, login gate, role visibility), role-matrix
   API tests (`role_client` fixture) and CLI round trips for `users`/tokens.
-- Verified live: `/health` reports version 0.7.0 with
+- Verified live: `/health` reports version 1.0.0b1 with
   `auth_mode=token-store`, tokenless `/api/summary` is rejected with 401 and
   `GET /api/auth/me` returns `name=web, role=analyst, source=token`.
 
@@ -424,7 +424,10 @@ reduced-motion fallback). `flutter analyze` reports no issues.
     (Phase 20); SSO/OIDC federation remains open.
 
 ## Project status
-Phases 0–20 complete and verified:
+Phases 0–20 complete and verified (version 1.0.0b1, "v1.0 beta"):
+- Live deployment: CloudTrail → S3 → `sync_aws_logs.ps1` pull → `watch`
+  detection → dashboard + phone/app clients, relaunched automatically at login
+  via `scripts\start_sentinel.bat` (Windows Startup folder).
 - 302 Python tests passing (1 skipped on Windows); 29/29 Flutter tests passing
   and `flutter analyze` reports no issues (Flutter 3.47 / Dart 3.13).
 - Triage verified by tests: workflow transitions, in-place migration of a
@@ -434,7 +437,7 @@ Phases 0–20 complete and verified:
   flat parameter shapes, grouping, config toggles and end-to-end sample data.
 - Demo dataset: 220 events → 20 alerts (13 critical, 7 high), all nine engines.
 - Dashboard headless run: 0 exceptions, 3 tabs, 3 actions, 4 export formats.
-- API verified live: `/health` reports version 0.7.0 and the alert count,
+- API verified live: `/health` reports version 1.0.0b1 and the alert count,
   tokenless `/api/summary` is rejected with 401, token requests return the
   summary, and `PATCH /api/alerts/{id}` drives triage (covered by tests).
 - Auth verified live (Phase 20): with a token store active `/api/summary`
