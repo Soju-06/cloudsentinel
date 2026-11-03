@@ -19,19 +19,27 @@ param(
     [string]$Bucket,
 
     # Where CloudSentinel scans: override if you moved data\raw
-    [string]$LocalPath = (Join-Path $PSScriptRoot "..\data\raw"),
+    [string]$LocalPath,
 
     [int]$IntervalSeconds = 300
 )
 
-$ErrorActionPreference = "Stop"
+# $PSScriptRoot is not available inside param() defaults on Windows
+# PowerShell 5.1, so derive the script location ourselves.
+if ([string]::IsNullOrWhiteSpace($LocalPath)) {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+    $LocalPath = [IO.Path]::GetFullPath((Join-Path $scriptDir "..\data\raw"))
+}
+
 Write-Host ("Syncing s3://{0} -> {1} every {2}s (Ctrl+C to stop)." -f $Bucket, $LocalPath, $IntervalSeconds)
 
 while ($true) {
-    try {
-        aws s3 sync "s3://$Bucket" "$LocalPath"
-    } catch {
-        Write-Warning "sync failed: $($_.Exception.Message) - retrying next cycle."
+    aws s3 sync "s3://$Bucket" "$LocalPath"
+    if ($LASTEXITCODE -ne 0) {
+        $message = "aws s3 sync failed (exit {0}) - check the bucket name, " +
+            "that the AWS CLI is on PATH (reopen PowerShell if 'aws' is " +
+            "unknown) and 'aws configure'. Retrying in {1}s."
+        Write-Warning ($message -f $LASTEXITCODE, $IntervalSeconds)
     }
     Start-Sleep -Seconds $IntervalSeconds
 }
