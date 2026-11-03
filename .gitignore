@@ -67,3 +67,6 @@ data/api_tokens.json
 data/api_tokens.json.tmp
 data/console_users.json
 data/console_users.json.tmp
+
+# The hand-off upload bundle is a disposable snapshot, not source of truth
+git/
