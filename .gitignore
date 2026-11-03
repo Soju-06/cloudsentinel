@@ -24,6 +24,9 @@ data/raw/*.json
 data/raw/*.jsonl
 data/raw/*.csv
 !data/raw/.gitkeep
+# synced CloudTrail deliveries + archived demo files (runtime data)
+data/raw/AWSLogs/
+data/raw_demo_archive/
 reports/*
 !reports/.gitkeep
 
