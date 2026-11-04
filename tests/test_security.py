@@ -74,6 +74,22 @@ def test_revoke_by_fingerprint_prefix(tmp_path):
     assert store.verify(plaintext) is False
 
 
+def test_store_picks_up_changes_from_another_process(tmp_path):
+    """The API holds one long-lived store; the CLI mutates the file in its own
+    short-lived one. The running server must see both without a restart."""
+    path = tmp_path / "tokens.json"
+    writer = TokenStore(path)
+    writer.add(label="seed")
+
+    server = TokenStore(path)  # loaded before the latecomer token exists
+    plaintext, _ = writer.add(label="latecomer", role="viewer")
+    assert server.verify(plaintext) is True
+
+    another = TokenStore(path)  # fresh view of the same file
+    assert another.revoke("latecomer") == 1
+    assert server.verify(plaintext) is False
+
+
 def test_duplicate_label_is_rejected(tmp_path):
     store = TokenStore(tmp_path / "tokens.json")
     store.add(label="phone")

@@ -17,9 +17,11 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 
 ## Screenshots
 
-| Streamlit console (dashboard) | Android app (phone) |
-|:---:|:---:|
-| ![CloudSentinel console](docs/screenshots/dashboard.png) | ![CloudSentinel phone app](docs/screenshots/phone.png) |
+![CloudSentinel dashboard — live detection feed](docs/screenshots/dashboard.png)
+
+*The Windows desktop app on a live deployment: metric cards, the nine detector
+filter chips and the triage state filters. The same UI runs natively on
+Android — a phone capture will be added here.*
 
 ---
 
@@ -79,7 +81,7 @@ raw logs ──► ingest/normalise ──► detectors ──► SQLite alerts 
 - **Futuristic console** — dark glassmorphism theme, neon severity badges,
   Plotly charts, top-risk entities and one-click exports.
 - **Docker** — `Dockerfile` + `docker-compose.yml` for a reproducible console.
-- **303 automated Python tests** (302 pass, 1 skipped on Windows) plus
+- **304 automated Python tests** (303 pass, 1 skipped on Windows) plus
   **29 Flutter tests** covering ingestion, every detector, storage, reporting,
   notifications, configuration, CLI, API auth/rotation/rate limits/TLS,
   triage and status transitions, hardening scenarios, the Dart API client and
@@ -704,7 +706,7 @@ cloudsentinel/
 python -m pytest
 ```
 
-303 Python tests (1 skipped on Windows) covering:
+304 Python tests (1 skipped on Windows) covering:
 
 - generic JSON / JSONL / CSV, gzip, CloudTrail `Records` and CloudWatch Logs
   wrappers (including a genuine AWS subscription fixture)

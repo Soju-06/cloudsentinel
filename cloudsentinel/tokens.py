@@ -93,7 +93,30 @@ class TokenStore:
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path or DEFAULT_TOKEN_PATH)
         self._last_touch = 0.0
+        self._store_mtime = None  # refreshed by the load/save below
         self._data = self._load()
+        self._store_mtime = self._current_mtime()
+
+    def _current_mtime(self) -> int | None:
+        """File mtime (nanoseconds) used to detect changes by other processes."""
+        try:
+            return self.path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _refresh_if_changed(self) -> None:
+        """Pick up tokens added/revoked by another process (e.g. the CLI).
+
+        The API keeps one long-lived ``TokenStore`` instance while the CLI
+        creates and revokes tokens in short-lived ones on the same file. A
+        cheap stat per verification keeps every store in sync, so rotation
+        takes effect without restarting the server.
+        """
+        current = self._current_mtime()
+        if current == self._store_mtime:
+            return
+        self._data = self._load()
+        self._store_mtime = self._current_mtime()
 
     # ------------------------------------------------------------------ file
 
@@ -127,7 +150,12 @@ class TokenStore:
             os.chmod(temporary, 0o600)
         except OSError:
             pass  # Windows has no POSIX mode bits; skip silently.
+        temporary.write_text(
+            json.dumps(self._data, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         os.replace(temporary, self.path)
+        self._store_mtime = self._current_mtime()
 
     # --------------------------------------------------------------- helpers
 
@@ -211,6 +239,7 @@ class TokenStore:
         """Constant-time check returning the matching token record (role)."""
         if not presented:
             return None
+        self._refresh_if_changed()
 
         candidate = self._fingerprint(presented)
         matched_index: int | None = None
